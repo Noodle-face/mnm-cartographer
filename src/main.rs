@@ -3,6 +3,36 @@
 //! M&M Cartographer -- zone maps for Monsters & Memories.
 
 mod connections;
+mod gen;
+
+/// Single source of truth: the version in Cargo.toml. Nothing else declares it,
+/// so the title bar, --version and the stamp written into generated maps can
+/// never disagree.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Annotation files compiled into the binary, so a lone executable is complete.
+mod seed {
+    include!(concat!(env!("OUT_DIR"), "/seed.rs"));
+    pub static CONNECTIONS: &str = include_str!("../connections.json");
+}
+
+/// Write the built-in connections graph and seed markers into `dir` if they are
+/// not already present. Never overwrites: a user's own edits win.
+fn seed_assets(dir: &std::path::Path) {
+    let cj = dir.join("connections.json");
+    if !cj.exists() {
+        std::fs::create_dir_all(dir).ok();
+        std::fs::write(&cj, seed::CONNECTIONS).ok();
+    }
+    let md = dir.join("markers");
+    for (name, body) in seed::SEED_MARKERS {
+        let p = md.join(name);
+        if !p.exists() {
+            std::fs::create_dir_all(&md).ok();
+            std::fs::write(&p, body).ok();
+        }
+    }
+}
 mod paper;
 mod markers;
 mod pyramid;
@@ -36,8 +66,16 @@ fn data_dirs() -> Vec<PathBuf> {
         v.push(cwd);
     }
     if let Some(d) = dirs::data_dir() {
-        v.push(d.join("mnm-cartographer"));
+        let app = d.join("mnm-cartographer");
+        v.push(app.join("maps")); // where generation writes
+        v.push(app);
     }
+    // Run from the folder it lives in -- the usual case for an unzipped build --
+    // and the exe dir and cwd are the same place. The duplicates interleave
+    // rather than sitting adjacent, so dedup() would not catch them, and
+    // listing each path twice makes the --check output read like a bug report.
+    let mut seen = std::collections::HashSet::new();
+    v.retain(|p| seen.insert(p.clone()));
     v
 }
 
@@ -61,12 +99,44 @@ fn find_base() -> Option<PathBuf> {
     None
 }
 
+/// Every map found anywhere, not just under one root. Generated maps land in
+/// the data directory while a release keeps its markers beside the binary, so
+/// tying the two together loses one or the other.
+fn discover_all() -> Vec<Pyramid> {
+    let mut out: Vec<Pyramid> = Vec::new();
+    for d in data_dirs() {
+        for p in discover(&d) {
+            if !out.iter().any(|o| o.name == p.name) {
+                out.push(p);
+            }
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// Where markers and connections.json live: the first searched directory that
+/// actually has them, else the data directory, which is always writable.
+fn asset_base() -> PathBuf {
+    for d in data_dirs() {
+        if d.join("markers").is_dir() || d.join("connections.json").is_file() {
+            return d;
+        }
+    }
+    dirs::data_dir()
+        .map(|d| d.join("mnm-cartographer"))
+        .unwrap_or_else(app_dir)
+}
+
 struct Editing {
     id: String,
     label: String,
     kind: usize,
     note: String,
     link: String,
+    reqs: markers::Reqs,
+    /// Level is edited as text so the field can be left blank.
+    req_level: String,
     creating: bool,
 }
 
@@ -91,22 +161,41 @@ struct App {
     paper: Option<egui::TextureHandle>,
     /// Marker being dragged to a new position, if any.
     dragging: Option<String>,
+    /// Map generation: settings, the running job, and the last result.
+    settings: gen::job::Settings,
+    gen_job: Option<gen::job::Job>,
+    gen_note: String,
+    /// Maps panel: open state, the zone list, and what is ticked.
+    maps_open: bool,
+    zone_list: Vec<gen::job::ZoneEntry>,
+    zone_picked: std::collections::HashSet<String>,
+    zone_filter: String,
     cursor_world: Option<(f64, f64)>,
     title_shown: String,
     confirm_clear: bool,
 }
 
 impl App {
-    fn new(base: PathBuf) -> Self {
-        let maps = discover(&base);
+    fn new(base: PathBuf, log: Option<PathBuf>) -> Self {
+        // Maps and annotations are found independently: generated maps live in
+        // the data directory while markers and connections.json sit beside the
+        // application. Tying them to one root loses whichever is elsewhere.
+        let maps = discover_all();
+        let assets = if base.join("markers").is_dir() || base.join("connections.json").is_file() {
+            base.clone()
+        } else {
+            asset_base()
+        };
+        let base = assets;
         let graph = connections::Graph::load(&base);
-        let watcher = watch::ZoneWatcher::new(None);
+        let watcher = watch::ZoneWatcher::new(log);
         let names: Vec<String> = maps.iter().map(|m| m.name.clone()).collect();
         let cur = watcher
             .zone
             .as_deref()
             .and_then(|z| watch::match_zone(z, &names))
             .unwrap_or(0);
+        let settings = gen::job::Settings::load();
         let mset = maps
             .get(cur)
             .map(|p| MarkerSet::load(&p.markers_path(&base)))
@@ -122,7 +211,302 @@ impl App {
             cursor_world: None,
             title_shown: String::new(),
             confirm_clear: false,
+            settings,
+            gen_job: None,
+            gen_note: String::new(),
+            maps_open: false,
+            zone_list: Vec::new(),
+            zone_picked: Default::default(),
+            zone_filter: String::new(),
         }
+    }
+
+    /// Reload the map list after a generation run, without restarting.
+    fn rescan(&mut self) {
+        let extra = gen::job::maps_dir();
+        // Generated maps land in the data directory; prefer whatever base
+        // already had maps, but fall back to the generated location.
+        let _ = &extra;
+        self.maps = discover_all();
+        self.textures.clear();
+        self.fitted = false;
+        self.cur = self.cur.min(self.maps.len().saturating_sub(1));
+        if let Some(p) = self.maps.get(self.cur) {
+            self.mset = MarkerSet::load(&p.markers_path(&self.base));
+        }
+    }
+
+    /// Re-read which zones exist and which are already built.
+    fn refresh_zone_list(&mut self) {
+        let Some(install) = self.settings.resolve() else {
+            self.zone_list.clear();
+            return;
+        };
+        self.zone_list = gen::job::list_zones(&install, &gen::job::maps_dir());
+    }
+
+    /// The maps window: pick zones and (re)build them. Reachable whether or
+    /// not maps already exist, which the first-run panel alone was not.
+    fn maps_window(&mut self, ctx: &egui::Context) {
+        if !self.maps_open {
+            return;
+        }
+        let mut open = self.maps_open;
+        egui::Window::new("Maps")
+            .open(&mut open)
+            .default_width(420.0)
+            .default_height(520.0)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                let found = self.settings.resolve();
+                ui.horizontal(|ui| {
+                    match &found {
+                        Some(d) => {
+                            ui.label(egui::RichText::new("Game install").strong());
+                            ui.label(egui::RichText::new(
+                                d.display().to_string()).small().weak());
+                        }
+                        None => {
+                            ui.colored_label(egui::Color32::from_rgb(0xa0, 0x1b, 0x22),
+                                "Game install not found");
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Choose install folder...").clicked() {
+                        if let Some(p) = rfd::FileDialog::new()
+                            .set_title("Select the Monsters and Memories folder")
+                            .pick_folder()
+                        {
+                            match gen::job::resolve_install(&p) {
+                                Some(_) => {
+                                    self.settings.install_dir = Some(p);
+                                    self.settings.save();
+                                    self.gen_note.clear();
+                                    self.refresh_zone_list();
+                                }
+                                None => self.gen_note = format!(
+                                    "No game bundles under {}", p.display()),
+                            }
+                        }
+                    }
+                    if ui.button("Rescan").clicked() {
+                        self.refresh_zone_list();
+                    }
+                });
+                if !self.gen_note.is_empty() {
+                    ui.colored_label(egui::Color32::from_rgb(0xa0, 0x1b, 0x22), &self.gen_note);
+                }
+                ui.separator();
+
+                if self.zone_list.is_empty() {
+                    ui.label("No zones listed yet.");
+                    if found.is_some() && ui.button("Scan for zones").clicked() {
+                        self.refresh_zone_list();
+                    }
+                } else {
+                    let built = self.zone_list.iter().filter(|z| z.built).count();
+                    ui.label(format!("{} zones, {} built", self.zone_list.len(), built));
+                    ui.horizontal(|ui| {
+                        if ui.button("All").clicked() {
+                            self.zone_picked =
+                                self.zone_list.iter().map(|z| z.name.clone()).collect();
+                        }
+                        if ui.button("None").clicked() {
+                            self.zone_picked.clear();
+                        }
+                        if ui.button("Missing only").clicked() {
+                            self.zone_picked = self.zone_list.iter()
+                                .filter(|z| !z.built).map(|z| z.name.clone()).collect();
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Filter");
+                        ui.text_edit_singleline(&mut self.zone_filter);
+                    });
+                    let needle = self.zone_filter.to_lowercase();
+                    egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                        for z in &self.zone_list {
+                            if !needle.is_empty() && !z.name.to_lowercase().contains(&needle) {
+                                continue;
+                            }
+                            let mut on = self.zone_picked.contains(&z.name);
+                            let label = if z.built {
+                                format!("{}  (built)", z.name)
+                            } else {
+                                z.name.clone()
+                            };
+                            if ui.checkbox(&mut on, label).changed() {
+                                if on {
+                                    self.zone_picked.insert(z.name.clone());
+                                } else {
+                                    self.zone_picked.remove(&z.name);
+                                }
+                            }
+                        }
+                    });
+                }
+
+                ui.separator();
+                let busy = self.gen_job.as_ref().map_or(false, |j| !j.done);
+                let n = self.zone_picked.len();
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(found.is_some() && !busy && n > 0,
+                        egui::Button::new(format!("Rebuild {n} selected"))).clicked()
+                    {
+                        if let Some(install) = found.clone() {
+                            let out = gen::job::maps_dir();
+                            std::fs::create_dir_all(&out).ok();
+                            // Explicitly chosen zones are rebuilt even if present.
+                            self.gen_job = Some(gen::job::Job::start(
+                                install, out, Some(self.zone_picked.clone()), true));
+                        }
+                    }
+                    if ui.add_enabled(found.is_some() && !busy,
+                        egui::Button::new("Build missing")).clicked()
+                    {
+                        if let Some(install) = found.clone() {
+                            let out = gen::job::maps_dir();
+                            std::fs::create_dir_all(&out).ok();
+                            self.gen_job = Some(gen::job::Job::start(install, out, None, false));
+                        }
+                    }
+                });
+                self.progress_ui(ui);
+            });
+        self.maps_open = open;
+    }
+
+    /// Progress, estimate and cancel. Shared by the first-run panel and the
+    /// maps window so they cannot drift apart.
+    fn progress_ui(&mut self, ui: &mut egui::Ui) {
+        let dim = egui::Color32::from_rgb(0x6a, 0x5f, 0x50);
+        let mut finished = false;
+        if let Some(job) = &mut self.gen_job {
+            job.poll();
+            let (frac, eta) = job.progress();
+            ui.add_space(10.0);
+            ui.add(egui::ProgressBar::new(frac)
+                .desired_width(ui.available_width().min(520.0))
+                .show_percentage());
+            match job.last.clone() {
+                Some(gen::job::Stage::Survey { done, total, what }) => {
+                    ui.label(egui::RichText::new(
+                        format!("Looking for zones -- bundle {}/{}", done + 1, total)).color(INK));
+                    ui.label(egui::RichText::new(what).small().color(dim));
+                }
+                Some(gen::job::Stage::Zone { done, total, name, level, levels }) => {
+                    ui.label(egui::RichText::new(format!("Building {name}")).strong().color(INK));
+                    ui.label(egui::RichText::new(format!(
+                        "zone {}/{}  --  zoom level {}/{}",
+                        done + 1, total, level.max(1), levels)).color(dim));
+                }
+                Some(gen::job::Stage::Finished { zones, tiles, bytes, failed }) => {
+                    ui.label(egui::RichText::new(format!(
+                        "Done: {zones} zones, {tiles} tiles, {:.0} MB",
+                        bytes as f64 / 1e6)).strong().color(INK));
+                    for f in failed.iter().take(4) {
+                        ui.label(egui::RichText::new(f).small().color(dim));
+                    }
+                    finished = true;
+                }
+                Some(gen::job::Stage::Failed(e)) => {
+                    ui.colored_label(egui::Color32::from_rgb(0xa0, 0x1b, 0x22), e);
+                    finished = true;
+                }
+                None => { ui.label(egui::RichText::new("Starting...").color(INK)); }
+            }
+            let elapsed = job.started.elapsed().as_secs_f32();
+            let fmt = |s: f32| {
+                let s = s.max(0.0) as u32;
+                if s >= 60 { format!("{}m {:02}s", s / 60, s % 60) } else { format!("{s}s") }
+            };
+            ui.label(egui::RichText::new(match eta {
+                Some(e) => format!("elapsed {}  --  about {} remaining", fmt(elapsed), fmt(e)),
+                None => format!("elapsed {}", fmt(elapsed)),
+            }).small().color(dim));
+            if !job.done && ui.button("Cancel").clicked() {
+                job.cancel();
+            }
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+        }
+        if finished {
+            self.gen_job = None;
+            self.rescan();
+            self.refresh_zone_list();
+        }
+    }
+
+    /// The panel shown when there are no maps: locate the game, generate them.
+    fn generation_ui(&mut self, ui: &mut egui::Ui) {
+        // This panel sits on parchment, not egui's dark default, so every
+        // piece of text needs an explicit ink colour or it washes out.
+        let dim = egui::Color32::from_rgb(0x6a, 0x5f, 0x50);
+        ui.vertical_centered(|ui| {
+            ui.add_space(12.0);
+            ui.label(egui::RichText::new("No maps yet").heading().color(INK));
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(
+                "Maps are built from your own copy of the game. Nothing is\n\
+                 downloaded, and the game does not need to be running.").color(dim));
+            ui.add_space(14.0);
+
+            let found = self.settings.resolve();
+            match &found {
+                Some(d) => {
+                    ui.label(egui::RichText::new("Game install found").strong().color(INK));
+                    ui.label(egui::RichText::new(d.display().to_string()).small().color(dim));
+                }
+                None => {
+                    ui.colored_label(egui::Color32::from_rgb(0xa0, 0x1b, 0x22),
+                        "Could not find the game automatically.");
+                    ui.label(egui::RichText::new(
+                        "Choose the Monsters and Memories install folder.").small().color(dim));
+                }
+            }
+            ui.add_space(8.0);
+
+            ui.horizontal(|ui| {
+                ui.add_space(ui.available_width() / 2.0 - 150.0);
+                if ui.button("Choose install folder...").clicked() {
+                    if let Some(p) = rfd::FileDialog::new()
+                        .set_title("Select the Monsters and Memories folder")
+                        .pick_folder()
+                    {
+                        match gen::job::resolve_install(&p) {
+                            Some(_) => {
+                                self.settings.install_dir = Some(p);
+                                self.settings.save();
+                                self.gen_note.clear();
+                            }
+                            None => {
+                                self.gen_note = format!(
+                                    "No game bundles under {} -- pick the folder containing \
+                                     mnm_Data.", p.display());
+                            }
+                        }
+                    }
+                }
+                let busy = self.gen_job.as_ref().map_or(false, |j| !j.done);
+                if ui.add_enabled(found.is_some() && !busy,
+                                  egui::Button::new("Generate maps")).clicked()
+                {
+                    if let Some(install) = found.clone() {
+                        let out = gen::job::maps_dir();
+                        std::fs::create_dir_all(&out).ok();
+                        self.gen_note.clear();
+                        self.gen_job = Some(gen::job::Job::start(install, out, None, false));
+                    }
+                }
+            });
+
+            if !self.gen_note.is_empty() {
+                ui.add_space(8.0);
+                ui.colored_label(egui::Color32::from_rgb(0xa0, 0x1b, 0x22), &self.gen_note);
+            }
+
+            self.progress_ui(ui);
+        });
     }
 
 
@@ -240,6 +624,8 @@ fn shape_points(shape: Shape, c: egui::Pos2, r: f32) -> Vec<egui::Pos2> {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _f: &mut eframe::Frame) {
+        // Drawn first so it floats above the map and the side panel.
+        self.maps_window(ctx);
         // ---- follow the game between zones -------------------------------
         let t = ctx.input(|i| i.time);
         if self.follow && t - self.last_poll > 2.0 {
@@ -338,6 +724,13 @@ impl App {
                 if ui.button("Clear markers\u{2026}").on_hover_text(
                     "Remove every marker in this zone").clicked() {
                     self.confirm_clear = true;
+                }
+                if ui.button("Maps\u{2026}").on_hover_text(
+                    "Generate or rebuild zone maps from your game install").clicked() {
+                    self.maps_open = true;
+                    if self.zone_list.is_empty() {
+                        self.refresh_zone_list();
+                    }
                 }
             });
             ui.checkbox(&mut self.follow, "Follow game (tail Player.log)");
@@ -488,6 +881,8 @@ impl App {
                 kind: KINDS.iter().position(|k| k.key == m.kind).unwrap_or(7),
                 note: m.note.clone(),
                 link: m.link.clone(),
+                req_level: m.reqs.level.map(|l| l.to_string()).unwrap_or_default(),
+                reqs: m.reqs.clone(),
                 creating,
             });
         }
@@ -525,10 +920,16 @@ impl App {
                     egui::Color32::WHITE,
                 );
                 if self.maps.is_empty() {
-                    painter.text(vp.center(), egui::Align2::CENTER_CENTER,
-                        "No map data found.\n\nDownload mnm-maps.zip from the releases page\n\
-                         and unzip it so a `maps` folder sits next to the application.",
-                        egui::FontId::proportional(15.0), PAPER);
+                    // No maps: offer to build them from the user's own install
+                    // rather than pointing at a download that may not exist.
+                    let panel = egui::Rect::from_center_size(
+                        vp.center(), egui::vec2(vp.width().min(620.0), vp.height().min(420.0)));
+                    let mut ui = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(panel)
+                            .layout(egui::Layout::top_down(egui::Align::Center)),
+                    );
+                    self.generation_ui(&mut ui);
                     return;
                 }
                 if !self.fitted { self.fit(vp) }
@@ -691,6 +1092,12 @@ impl App {
                                 ui.label(egui::RichText::new(format!(
                                     "{}   X {:.0}, Z {:.0}", ki.label, m.x, m.z)).size(11.0).weak());
                             });
+                            if !m.reqs.is_empty() {
+                                ui.label(egui::RichText::new(
+                                    format!("requires {}", m.reqs.summary()))
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(0xa8, 0x6a, 0x12)));
+                            }
                             ui.label(egui::RichText::new(brief).size(11.0));
                             match self.travel_target(m) {
                                 Some(z) => {
@@ -888,6 +1295,29 @@ impl App {
                 ui.label(egui::RichText::new(
                     "Pair teleporters: hovering either end draws the connection, \
                      clicking jumps to the other.").size(10.0).weak());
+                ui.add_space(6.0);
+                // Requirements as fields rather than prose, so "who can do
+                // this" is readable at a glance instead of buried in the note.
+                ui.label("Requirements");
+                egui::Grid::new("reqs").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+                    ui.label("Level");
+                    ui.add(egui::TextEdit::singleline(&mut ed.req_level)
+                        .desired_width(60.0).hint_text("any"));
+                    ui.end_row();
+                    ui.label("Class");
+                    ui.add(egui::TextEdit::singleline(&mut ed.reqs.class)
+                        .desired_width(f32::INFINITY).hint_text("any -- or Cleric, Druid"));
+                    ui.end_row();
+                    ui.label("Faction");
+                    ui.add(egui::TextEdit::singleline(&mut ed.reqs.faction)
+                        .desired_width(f32::INFINITY).hint_text("any -- or Ashira, amiable"));
+                    ui.end_row();
+                    ui.label("Other");
+                    ui.add(egui::TextEdit::singleline(&mut ed.reqs.other)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("a prerequisite quest, an item, a key..."));
+                    ui.end_row();
+                });
                 ui.add_space(4.0);
                 ui.label("Note");
                 ui.add(egui::TextEdit::multiline(&mut ed.note)
@@ -908,10 +1338,14 @@ impl App {
         let id = ed.id.clone();
         let (label, kindi, note, link) =
             (ed.label.clone(), ed.kind, ed.note.clone(), ed.link.clone());
+        let mut reqs = ed.reqs.clone();
+        // A blank or unparseable level means "no level requirement" rather
+        // than zero, which would read as a real gate.
+        reqs.level = ed.req_level.trim().parse::<u32>().ok().filter(|l| *l > 0);
         if save {
             if let Some(m) = self.mset.get_mut(&id) {
                 m.label = label; m.kind = KINDS[kindi].key.into(); m.note = note;
-                m.link = link;
+                m.link = link; m.reqs = reqs;
             }
             let _ = self.mset.save();
             self.editing = None;
@@ -930,11 +1364,327 @@ impl App {
 }
 
 fn main() -> eframe::Result<()> {
+    // Rust ignores SIGPIPE, so piping this program's output into `head` makes
+    // the next write fail and panic. Restore the default so it exits quietly
+    // like every other command-line tool.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("mnm-cartographer {VERSION}");
+        return Ok(());
+    }
     let check = args.iter().any(|a| a == "--check");
-    let base = args.iter().find(|a| !a.starts_with("--")).map(PathBuf::from)
-        .or_else(find_base)
-        .unwrap_or_else(app_dir);
+    // Several flags take a value, and those values must not be mistaken for the
+    // positional annotation directory. Mark every index that belongs to a flag
+    // before looking for the lone bare argument.
+    //
+    // Getting this wrong is not harmless: `--generate barracks` once read
+    // "barracks" as the annotation root and created a directory of that name.
+    let mut consumed = std::collections::HashSet::new();
+    for (i, a) in args.iter().enumerate() {
+        let takes = match a.as_str() {
+            "--log" | "--out" => 1,
+            // Optional value: only if the next argument is not itself a flag.
+            "--generate" => usize::from(args.get(i + 1).is_some_and(|n| !n.starts_with("--"))),
+            "--extract" => 2,
+            "--render" => 4,
+            _ => 0,
+        };
+        for k in 1..=takes {
+            consumed.insert(i + k);
+        }
+    }
+    let log = args
+        .iter()
+        .position(|a| a == "--log")
+        .and_then(|i| args.get(i + 1))
+        .map(PathBuf::from);
+    let explicit_base = args
+        .iter()
+        .enumerate()
+        .find(|(i, a)| !a.starts_with("--") && !consumed.contains(i))
+        .map(|(_, a)| PathBuf::from(a));
+    let base = explicit_base
+        .clone()
+        // `base` is the ANNOTATION root -- markers and connections.json. Maps
+        // are discovered separately, because generated maps live in the data
+        // directory while a release keeps its markers beside the binary.
+        .or_else(|| find_base().filter(|d| {
+            d.join("markers").is_dir() || d.join("connections.json").is_file()
+        }))
+        .unwrap_or_else(asset_base);
+    // A bare executable has neither file next to it; plant the built-in copies
+    // in the data directory so it works wherever the user put it. Only ever
+    // into a directory we chose -- never into a path the user named, where
+    // creating one would be a surprise.
+    if explicit_base.is_none()
+        && !(base.join("markers").is_dir() || base.join("connections.json").is_file())
+    {
+        seed_assets(&base);
+    }
+
+    // Developer check: extract geometry and report what the scene yielded,
+    // so Rust output can be compared against the Python generator it replaces.
+    if let Some(i) = args.iter().position(|a| a == "--extract") {
+        let bundle = args.get(i + 1).expect("--extract <bundle> <scene substring>");
+        let filter = args.get(i + 2).map(|s| s.to_lowercase()).unwrap_or_default();
+        let t0 = std::time::Instant::now();
+        let env = gen::bundle::Env::open(std::path::Path::new(bundle)).unwrap();
+        println!("opened in {:.2}s, {} serialized files", t0.elapsed().as_secs_f32(), env.file_count());
+        let scenes = env.scene_index();
+        let mut want: Vec<usize> = Vec::new();
+        for (path, cab) in &scenes {
+            if (filter.is_empty() || path.to_lowercase().contains(&filter))
+                && gen::is_geometry_scene(path)
+            {
+                println!("  scene {path}");
+                if let Some(fi) = env.file_index(cab) { want.push(fi) }
+            }
+        }
+        want.sort_unstable();
+        want.dedup();
+        let t1 = std::time::Instant::now();
+        let f = gen::extract::extract_floors(&env, &want);
+        println!("up-facing tris: {}  unresolved meshes: {}", f.tris.len(), f.unresolved);
+        println!("{:#?}", f.stats);
+        println!("extracted in {:.2}s (total {:.2}s)", t1.elapsed().as_secs_f32(), t0.elapsed().as_secs_f32());
+        if !f.tris.is_empty() {
+            let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+            for t in &f.tris { for v in t { for k in 0..3 {
+                lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } } }
+            println!("bounds x {:.1}..{:.1}  y {:.1}..{:.1}  z {:.1}..{:.1}",
+                     lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
+        }
+        return Ok(());
+    }
+
+    // Compare the hand-written primitives against the scipy originals.
+    // Render one zone to a PNG at a given resolution, for eyeball comparison
+    // against the maps the Python generator produced.
+    if let Some(i) = args.iter().position(|a| a == "--render") {
+        let bundle = args.get(i + 1).expect("--render <bundle> <scene> <ppu> <out.png>");
+        let filter = args.get(i + 2).map(|s| s.to_lowercase()).unwrap_or_default();
+        let ppu: f64 = args.get(i + 3).and_then(|s| s.parse().ok()).unwrap_or(1.0);
+        let out = args.get(i + 4).cloned().unwrap_or_else(|| "zone.png".into());
+        let t0 = std::time::Instant::now();
+        let env = gen::bundle::Env::open(std::path::Path::new(bundle)).unwrap();
+        let scenes = env.scene_index();
+        let mut files: Vec<usize> = Vec::new();
+        for (path, cab) in &scenes {
+            if (filter.is_empty() || path.to_lowercase().contains(&filter))
+                && gen::is_geometry_scene(path)
+            {
+                if let Some(fi) = env.file_index(cab) { files.push(fi) }
+            }
+        }
+        files.sort_unstable();
+        files.dedup();
+        let f = gen::extract::extract_floors(&env, &files);
+        println!("tris {} (unresolved {})", f.tris.len(), f.unresolved);
+        let sea = gen::scene::find_sea_level(&env, &files);
+        println!("sea level {:?}", sea);
+        let bbox = gen::raster::auto_bbox(&f.tris);
+        println!("bbox {:.1}..{:.1} x {:.1}..{:.1}", bbox.0, bbox.1, bbox.2, bbox.3);
+        let edges = gen::raster::global_band_edges(&f.tris, 8);
+        let hgt = gen::raster::rasterize(&f.tris, ppu, bbox);
+        println!("raster {}x{} ({:.1}s)", hgt.w, hgt.h, t0.elapsed().as_secs_f32());
+        let props = gen::scene::scene_props(&env, &files);
+        let props: std::collections::BTreeMap<_, _> = props.iter()
+            .map(|(k, v)| (k.clone(), gen::scene::thin(v, 55.0))).collect();
+        let r = gen::ink::render(&hgt, &edges, &gen::ink::InkOptions {
+            ppu, step_thresh: 3.2, sea, seed: 5,
+        });
+        let mut rgb = r.img;
+        let on_land = gen::ink::props_on_land(&props, &r.dry, bbox);
+        println!("props {:?}", on_land.iter().map(|(k, v)| (k.as_str(), v.len())).collect::<Vec<_>>());
+        gen::ink::draw_props(&mut rgb, bbox, ppu, &on_land);
+        let mut buf = image::RgbImage::new(rgb.w as u32, rgb.h as u32);
+        for (i, p) in rgb.v.iter().enumerate() {
+            buf.put_pixel((i % rgb.w) as u32, (i / rgb.w) as u32,
+                image::Rgb([(p[0]*255.0) as u8, (p[1]*255.0) as u8, (p[2]*255.0) as u8]));
+        }
+        buf.save(&out).unwrap();
+        println!("wrote {out} in {:.1}s total", t0.elapsed().as_secs_f32());
+        return Ok(());
+    }
+
+    // Wipe generated maps so a run can be tested from nothing. Only ever
+    // touches the containers it generated -- markers and connections.json are
+    // hand-made and are never deleted here.
+    if args.iter().any(|a| a == "--clean") {
+        let dir = gen::job::maps_dir();
+        let mut n = 0usize;
+        let mut bytes = 0u64;
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                if name.ends_with(".mbtiles") || name.ends_with(".mbtiles.part") {
+                    bytes += e.metadata().map(|m| m.len()).unwrap_or(0);
+                    if std::fs::remove_file(&p).is_ok() {
+                        println!("  removed {name}");
+                        n += 1;
+                    }
+                }
+            }
+        }
+        if args.iter().any(|a| a == "--all") {
+            // The survey cache is derived from the bundles; dropping it forces
+            // the next run to rescan, which is what a cold-start test wants.
+            let c = dir.parent().map(|d| d.join("zone-cache.json"));
+            if let Some(c) = c {
+                if c.exists() && std::fs::remove_file(&c).is_ok() {
+                    println!("  removed zone-cache.json (next run rescans bundles)");
+                }
+            }
+        }
+        println!("{n} map(s) removed, {:.0} MB freed, from {}", bytes as f64 / 1e6, dir.display());
+        if n == 0 {
+            println!("(nothing to remove -- markers and connections.json are never touched)");
+        }
+        return Ok(());
+    }
+
+    // What zones does this install actually ship? Read from the bundles, so
+    // the answer comes from the game rather than a list we maintain.
+    if args.iter().any(|a| a == "--list-zones") {
+        let settings = gen::job::Settings::load();
+        let Some(install) = settings.resolve() else {
+            eprintln!("Game install not found. Set MNM_BUNDLES or choose it in the app.");
+            return Ok(());
+        };
+        let out = gen::job::maps_dir();
+        let zs = gen::job::list_zones(&install, &out);
+        println!("{} zones in {}", zs.len(), install.display());
+        for z in &zs {
+            println!("  [{}] {}", if z.built { "x" } else { " " }, z.name);
+        }
+        println!("{} built, {} missing",
+                 zs.iter().filter(|z| z.built).count(),
+                 zs.iter().filter(|z| !z.built).count());
+        return Ok(());
+    }
+
+    // Headless generation, same machinery the button uses.
+    if let Some(i) = args.iter().position(|a| a == "--generate") {
+        let only = args.get(i + 1)
+            .filter(|s| !s.starts_with("--") && args.get(i) != Some(&"--out".to_string()))
+            .cloned();
+        let settings = gen::job::Settings::load();
+        let Some(install) = settings.resolve() else {
+            eprintln!("Game install not found. Set MNM_BUNDLES, or choose the folder in the app.");
+            return Ok(());
+        };
+        println!("install  {}", install.display());
+        let out = args.iter().position(|a| a == "--out")
+            .and_then(|i| args.get(i + 1))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(gen::job::maps_dir);
+        std::fs::create_dir_all(&out).ok();
+        println!("output   {}", out.display());
+        let t0 = std::time::Instant::now();
+        let located = gen::zones::survey_cached(&install, |d, t, what| {
+            if !what.is_empty() { println!("  scanning {}/{}  {}", d + 1, t, what) }
+        });
+        let wanted: Vec<_> = located.into_iter()
+            .filter(|l| only.as_ref().map_or(true, |o| l.zone.to_lowercase().contains(&o.to_lowercase())))
+            .collect();
+        println!("{} zones to build", wanted.len());
+        let mut by_bundle: std::collections::BTreeMap<std::path::PathBuf, Vec<gen::zones::Located>> =
+            Default::default();
+        let many = wanted.len() > 1;
+        for l in wanted { by_bundle.entry(l.bundle.clone()).or_default().push(l) }
+        let (mut tiles_n, mut bytes_n, mut zones_n) = (0usize, 0u64, 0usize);
+        use rayon::prelude::*;
+        let lanes = if gen::profiling() && many { 1 } else { gen::job::zone_concurrency() };
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(lanes).build().unwrap();
+        println!("building {lanes} zone(s) at a time");
+        // Profiling forces one zone at a time so stage lines do not interleave --
+        // but only when there is more than one zone to build. Shrinking the pool
+        // also shrinks the pool that the *nested* parallel sections run on, which
+        // made the profile report serial times for work that is parallel in a
+        // real run.
+        let force = args.iter().any(|a| a == "--force");
+        for (bundle, group) in by_bundle {
+            // Decide what is left to do BEFORE opening the bundle: these files
+            // run to 2 GB, and a resumed run should not pay to open one just to
+            // discover every zone in it is already built.
+            let todo: Vec<_> = group.into_iter().filter(|l| {
+                let dest = out.join(format!("{}.mbtiles", gen::zones::slug(&l.zone)));
+                if dest.exists() && !force {
+                    println!("  {:<24} already built (--force to rebuild)", l.zone);
+                    false
+                } else { true }
+            }).collect();
+            if todo.is_empty() { continue }
+            let env = match gen::bundle::Env::open(&bundle) {
+                Ok(e) => e,
+                Err(e) => { eprintln!("  !! {}: {e}", bundle.display()); continue }
+            };
+            let out = &out;
+            let res: Vec<(usize, u64, bool)> = pool.install(|| todo.par_iter().map(|l| {
+                let t1 = std::time::Instant::now();
+                let dest = out.join(format!("{}.mbtiles", gen::zones::slug(&l.zone)));
+                let (tris, sea, props) = gen::tiles::load_zone(&env, &l.group);
+                if tris.is_empty() {
+                    println!("  {:<24} skipped (no geometry)", l.zone);
+                    return (0, 0, false);
+                }
+                match gen::tiles::build(&dest,
+                    &gen::tiles::ZoneInput { name: &l.zone, tris: &tris, sea, props: &props },
+                    &gen::tiles::Settings::default(), |_, _| {})
+                {
+                    Ok((n, b)) => {
+                        println!("  {:<24} {:>7} tris {:>5} tiles {:>6.1} MB  {:.1}s",
+                                 l.zone, tris.len(), n, b as f64 / 1e6, t1.elapsed().as_secs_f32());
+                        (n, b, true)
+                    }
+                    Err(e) => { eprintln!("  !! {}: {e}", l.zone); (0, 0, false) }
+                }
+            }).collect());
+            for (n, b, ok) in res {
+                tiles_n += n; bytes_n += b; if ok { zones_n += 1 }
+            }
+        }
+        println!("\n{zones_n} zones, {tiles_n} tiles, {:.0} MB in {:.0}s",
+                 bytes_n as f64 / 1e6, t0.elapsed().as_secs_f32());
+        return Ok(());
+    }
+
+    if args.iter().any(|a| a == "--selftest") {
+        use gen::grid::*;
+        let (w, h) = (64usize, 48usize);
+        let src = noise(w, h, 7);
+        let m = Mask { w, h, v: src.v.iter().map(|t| *t > 0.55).collect() };
+        let sum = |g: &Grid| g.v.iter().map(|t| *t as f64).sum::<f64>();
+        println!("input_sum {:.6}", sum(&src));
+        println!("mask_count {}", m.count());
+        println!("gauss2_sum {:.6}", sum(&gaussian(&src, 2.0)));
+        println!("gauss_aniso_sum {:.6}", sum(&gaussian_xy(&src, 0.6, 3.0)));
+        println!("edt_sum {:.6}", sum(&distance_to_background(&m)));
+        println!("maxf5_sum {:.6}", sum(&max_filter(&src, 5)));
+        println!("minf5_sum {:.6}", sum(&min_filter(&src, 5)));
+        println!("median3_sum {:.6}", sum(&median3(&src)));
+        let (lab, n) = label(&m);
+        println!("label_n {}", n);
+        println!("label_sum {}", lab.iter().map(|t| *t as u64).sum::<u64>());
+        println!("skel_count {}", skeletonize(&m).count());
+        // A thick diagonal band, which is what the wall detector actually emits.
+        let mut band = Mask::new(w, h, false);
+        for y in 0..h { for x in 0..w {
+            let d = (x as f32 * 0.6 + y as f32 * 0.8 - 30.0).abs();
+            if d < 6.0 { band.v[y * w + x] = true }
+        }}
+        println!("band_count {}", band.count());
+        println!("band_skel_count {}", skeletonize(&band).count());
+        println!("dilate1_count {}", dilate(&m, &disk(1)).count());
+        println!("erode1_count {}", erode(&m, &disk(1)).count());
+        println!("closing2_count {}", closing(&m, &disk(2)).count());
+        return Ok(());
+    }
 
     if args.iter().any(|a| a == "--dump-paper") {
         // Write the generated tile out so it can be inspected for seams.
@@ -948,16 +1698,25 @@ fn main() -> eframe::Result<()> {
 
     if check {
         // Diagnostics without opening a window: what did it find, and where?
+        println!("version       {VERSION}");
         println!("base          {}", base.display());
         println!("searched      {}", data_dirs().iter()
             .map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n              "));
-        let maps = discover(&base);
+        let maps = discover_all();
         println!("zones         {}", maps.len());
+        println!("markers from  {}", base.display());
         let g = connections::Graph::load(&base);
         println!("wiki edges    {}", g.adj.values().map(|v| v.len()).sum::<usize>() / 2);
-        let w = watch::ZoneWatcher::new(None);
+        let w = watch::ZoneWatcher::new(log.clone());
         println!("Player.log    {}", w.path.as_ref()
             .map(|p| p.display().to_string()).unwrap_or_else(|| "not found".into()));
+        if w.path.is_none() {
+            // Say where it looked, so a tester can report the real location.
+            println!("log searched  {}", watch::candidates().iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>().join("\n              "));
+            println!("              (override with --log <path to Player.log>)");
+        }
         println!("current zone  {}", w.zone.clone().unwrap_or_else(|| "-".into()));
         let mut total = 0;
         for m in &maps {
@@ -987,12 +1746,12 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 860.0])
             .with_min_inner_size([720.0, 520.0])
-            .with_title("M&M Cartographer"),
+            .with_title(format!("M&M Cartographer {VERSION}")),
         ..Default::default()
     };
     eframe::run_native(
         "M&M Cartographer",
         opts,
-        Box::new(move |_cc| Ok(Box::new(App::new(base)))),
+        Box::new(move |_cc| Ok(Box::new(App::new(base, log)))),
     )
 }

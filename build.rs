@@ -1,0 +1,35 @@
+//! Embed the shipped annotation files into the binary.
+//!
+//! The viewer must work as a single executable placed anywhere: without
+//! connections.json it loses official zone names and the wiki exit graph, and
+//! without the seed markers a new user starts with nothing. Both are small and
+//! are written into the data directory on first run if absent.
+use std::io::Write;
+
+fn main() {
+    println!("cargo:rerun-if-changed=connections.json");
+    println!("cargo:rerun-if-changed=markers");
+
+    let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("seed.rs");
+    let mut f = std::fs::File::create(&out).unwrap();
+    writeln!(f, "pub static SEED_MARKERS: &[(&str, &str)] = &[").unwrap();
+    if let Ok(rd) = std::fs::read_dir("markers") {
+        let mut names: Vec<_> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
+            .collect();
+        names.sort();
+        for p in names {
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            writeln!(
+                f,
+                "    ({:?}, include_str!({:?})),",
+                name,
+                std::fs::canonicalize(&p).unwrap()
+            )
+            .unwrap();
+        }
+    }
+    writeln!(f, "];").unwrap();
+}
