@@ -1,0 +1,112 @@
+{
+ "markers": [
+  {
+   "id": "282bf627",
+   "x": 223.8,
+   "z": -1233.6,
+   "label": "to NightHarborSewers",
+   "kind": "exit",
+   "note": "Zone line to NightHarborSewers.\nScene object: Sewer Zone Line Blocker\nPosition from adjacent geometry - approximate.",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "abf89c58",
+   "x": 283.8,
+   "z": -1425.0,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: NH_TeleportGem (1)",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "7450e238",
+   "x": 495.1,
+   "z": -1496.0,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: NH_TeleportGem (10)",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "ed9d042e",
+   "x": 584.2,
+   "z": -1425.0,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: NH_TeleportGem (1)",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "917445cf",
+   "x": 596.5,
+   "z": -1586.0,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: NH_TeleportGem (5)",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "6b9735df",
+   "x": 616.8,
+   "z": -1586.0,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: NH_TeleportGem (4)",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "bc3e6a70",
+   "x": 642.8,
+   "z": -1586.0,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: NH_TeleportGem",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "9990e9e2",
+   "x": 653.0,
+   "z": -1627.2,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: NH_TeleportGem (3)",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "ed1ebf2b",
+   "x": 664.5,
+   "z": -1585.9,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: NH_TeleportGem (1)",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "0ba73a1a",
+   "x": 698.5,
+   "z": -1617.5,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: NH_TeleportGem (2)",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "9d2c0b67",
+   "x": 718.4,
+   "z": -1676.6,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: NH_TeleportGem (4)",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "78619e64",
+   "x": 755.0,
+   "z": -1659.5,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: NH_TeleportGem (3)",
+   "added": "2026-10-04 14:17"
+  }
+ ]
+}

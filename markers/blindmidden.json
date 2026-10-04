@@ -1,0 +1,31 @@
+{
+ "markers": [
+  {
+   "id": "fe70c5db",
+   "x": -47.0,
+   "z": -204.2,
+   "label": "to AilVorith",
+   "kind": "exit",
+   "note": "Zone line to AilVorith.\nScene object: AV Secret Zone Line",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "bb583f28",
+   "x": -47.0,
+   "z": -169.3,
+   "label": "to AilVorith",
+   "kind": "exit",
+   "note": "Zone line to AilVorith.\nScene object: AV Main Zone Line",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "30f72e02",
+   "x": -47.0,
+   "z": 206.2,
+   "label": "to GreatCavernSea",
+   "kind": "exit",
+   "note": "Zone line to GreatCavernSea.\nScene object: GCS Zone Line",
+   "added": "2026-10-04 14:17"
+  }
+ ]
+}

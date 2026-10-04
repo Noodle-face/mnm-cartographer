@@ -1,0 +1,22 @@
+{
+ "markers": [
+  {
+   "id": "4f09a4d5",
+   "x": 317.6,
+   "z": 390.9,
+   "label": "to FallenPass",
+   "kind": "exit",
+   "note": "Zone line to FallenPass.\nScene object: FallenPassZoneline:SM_FP_FW_Stairs (2)\nPosition from adjacent geometry - approximate.",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "f8b4c394",
+   "x": 327.8,
+   "z": 429.1,
+   "label": "to FallenPass",
+   "kind": "exit",
+   "note": "Zone line to FallenPass.\nScene object: FallenPassZoneline:SM_SLimePool_01\nPosition from adjacent geometry - approximate.",
+   "added": "2026-10-04 14:17"
+  }
+ ]
+}

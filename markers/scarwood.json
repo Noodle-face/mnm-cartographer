@@ -1,0 +1,13 @@
+{
+ "markers": [
+  {
+   "id": "cef2a6ba",
+   "x": 348.3,
+   "z": 1114.8,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: PortalDestWizard",
+   "added": "2026-10-04 14:17"
+  }
+ ]
+}

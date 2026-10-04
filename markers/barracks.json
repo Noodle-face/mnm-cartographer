@@ -1,0 +1,13 @@
+{
+ "markers": [
+  {
+   "id": "804ade5e",
+   "x": 5.5,
+   "z": -3.4,
+   "label": "to ShadedDunes",
+   "kind": "exit",
+   "note": "Zone line to ShadedDunes.\nScene object: ShadedDunesZoneLine",
+   "added": "2026-10-04 14:17"
+  }
+ ]
+}

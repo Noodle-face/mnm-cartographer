@@ -1,0 +1,49 @@
+{
+ "markers": [
+  {
+   "id": "f8babaa8",
+   "x": -115.7,
+   "z": -188.2,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: AV_TeleportPad (4)",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "2ab168df",
+   "x": -91.1,
+   "z": -629.5,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: AV_TeleportPad (2)",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "f7c22bb4",
+   "x": -42.8,
+   "z": -216.2,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: AV_TeleportPad (1)",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "bd5a4ec8",
+   "x": -3.7,
+   "z": -210.0,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: AV_TeleportPad",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "a65f6576",
+   "x": 42.3,
+   "z": -255.8,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: AV_TeleportPad (2)",
+   "added": "2026-10-04 14:17"
+  }
+ ]
+}

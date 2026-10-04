@@ -1,0 +1,22 @@
+{
+ "markers": [
+  {
+   "id": "ff7859ed",
+   "x": -217.9,
+   "z": 53.5,
+   "label": "to FallenWatch",
+   "kind": "exit",
+   "note": "Zone line to FallenWatch.\nScene object: FWZonelineLights\nPosition from adjacent geometry - approximate.",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "a94d193f",
+   "x": -147.5,
+   "z": -412.0,
+   "label": "to FallenWatch",
+   "kind": "exit",
+   "note": "Zone line to FallenWatch.\nScene object: SM_FW_FP_ZonelineDoorway\nPosition from adjacent geometry - approximate.",
+   "added": "2026-10-04 14:17"
+  }
+ ]
+}

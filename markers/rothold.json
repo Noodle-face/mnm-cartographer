@@ -1,0 +1,22 @@
+{
+ "markers": [
+  {
+   "id": "acd68fff",
+   "x": -237.2,
+   "z": -191.7,
+   "label": "to GreatCavernSea",
+   "kind": "exit",
+   "note": "Zone line to GreatCavernSea.\nScene object: Zone Line - Deep Sea",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "8087bf70",
+   "x": 24.0,
+   "z": 0.0,
+   "label": "Trap",
+   "kind": "danger",
+   "note": "Scene object: Lower Crypt False Floor Pit Trap - Floor",
+   "added": "2026-10-04 14:17"
+  }
+ ]
+}

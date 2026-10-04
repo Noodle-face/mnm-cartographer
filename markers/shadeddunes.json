@@ -1,0 +1,40 @@
+{
+ "markers": [
+  {
+   "id": "cb9814a7",
+   "x": -563.0,
+   "z": 1690.0,
+   "label": "to FallenPass",
+   "kind": "exit",
+   "note": "Zone line to FallenPass.\nScene object: ZoneLineBlockerFPWater\nPosition from adjacent geometry - approximate.",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "72d131a8",
+   "x": -322.8,
+   "z": 1729.2,
+   "label": "to FallenPass",
+   "kind": "exit",
+   "note": "Zone line to FallenPass.\nScene object: ZoneLineBlockerFPWater (1)\nPosition from adjacent geometry - approximate.",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "f8a0993e",
+   "x": 363.7,
+   "z": 1662.6,
+   "label": "to FallenPass",
+   "kind": "exit",
+   "note": "Zone line to FallenPass.\nScene object: ZoneLineBlockerFPLand\nPosition from adjacent geometry - approximate.",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "43968e5a",
+   "x": 56.7,
+   "z": 164.7,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: PortalDestWizard",
+   "added": "2026-10-04 14:17"
+  }
+ ]
+}

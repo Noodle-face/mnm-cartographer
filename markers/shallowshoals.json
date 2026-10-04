@@ -1,0 +1,22 @@
+{
+ "markers": [
+  {
+   "id": "7c7c506a",
+   "x": 3011.2,
+   "z": 5912.5,
+   "label": "to HiddenGrotto",
+   "kind": "exit",
+   "note": "Zone line to HiddenGrotto.\nScene object: Hidden Grotto Zone Line Blocker\nPosition from adjacent geometry - approximate.",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "b7bef0cc",
+   "x": 6394.5,
+   "z": 3794.5,
+   "label": "to GrimtideSanctum",
+   "kind": "exit",
+   "note": "Zone line to GrimtideSanctum.\nScene object: Grimtide Sanctum Zone Line Blocker\nPosition from adjacent geometry - approximate.",
+   "added": "2026-10-04 14:17"
+  }
+ ]
+}

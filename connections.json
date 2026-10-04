@@ -1,0 +1,144 @@
+{
+  "_source": "https://monstersandmemories.miraheze.org/wiki/Zone_Connection_Map",
+  "_note": "Community wiki zone-connection graph, transcribed from the map image on 2026-10-04. It gives TOPOLOGY only - which zones touch - not where the zone line sits inside a zone. Positions come from features.py where the scene names them; otherwise place the marker yourself.",
+  "_aliases": {
+    "Evershade Weald": "EverGrove",
+    "Tomb of the Last Wyrmsbane": "WyrmsbaneTomb",
+    "Field of the Lost": "FieldsOfTheLost",
+    "Caves of Irem": null,
+    "Infested Crypt": null,
+    "Faelindral": "EverGrove"
+  },
+  "connections": [
+    [
+      "EverGrove",
+      "KeepersBight"
+    ],
+    [
+      "KeepersBight",
+      "Scarwood"
+    ],
+    [
+      "KeepersBight",
+      "ValeOfZintar"
+    ],
+    [
+      "Scarwood",
+      "FieldsOfTheLost"
+    ],
+    [
+      "ShallowShoals",
+      "ValeOfZintar"
+    ],
+    [
+      "ValeOfZintar",
+      "GlassFlats"
+    ],
+    [
+      "GlassFlats",
+      "SungreetStrand"
+    ],
+    [
+      "SungreetStrand",
+      "TelEkir"
+    ],
+    [
+      "SungreetStrand",
+      "WyrmsbaneTomb"
+    ],
+    [
+      "TelEkir",
+      "ShadedDunes"
+    ],
+    [
+      "AncientCrypt",
+      "WyrmsbaneTomb"
+    ],
+    [
+      "AncientCrypt",
+      "ShadedDunes"
+    ],
+    [
+      "FallenPass",
+      "ShadedDunes"
+    ],
+    [
+      "FallenPass",
+      "FallenWatch"
+    ],
+    [
+      "ShadedDunes",
+      "NightHarbor"
+    ],
+    [
+      "WyrmsbaneTomb",
+      "NightHarbor"
+    ],
+    [
+      "NightHarbor",
+      "NightHarborSewers"
+    ],
+    [
+      "NightHarborSewers",
+      "Underdocks"
+    ]
+  ],
+  "boat_routes": [
+    [
+      "KeepersBight",
+      "ShallowShoals"
+    ],
+    [
+      "ShallowShoals",
+      "FallenPass"
+    ],
+    [
+      "ShadedDunes",
+      "NightHarbor"
+    ]
+  ],
+  "portals": {
+    "wizard": [
+      "GlassFlats",
+      "ShadedDunes"
+    ],
+    "druid": [
+      "EverGrove",
+      "SungreetStrand"
+    ]
+  },
+  "no_known_connections": [
+    "AilVorith",
+    "GreatCavernSea",
+    "Rothold"
+  ],
+  "not_in_early_access": [
+    "FieldsOfTheLost",
+    "Underdocks",
+    "Caves of Irem",
+    "Infested Crypt"
+  ],
+  "display_names": {
+    "EverGrove": "Evershade Weald",
+    "WyrmsbaneTomb": "Tomb of the Last Wyrmsbane",
+    "AilVorith": "Ail'Vorith",
+    "KeepersBight": "Keeper's Bight",
+    "ValeOfZintar": "Vale of Zintar",
+    "FieldsOfTheLost": "Field of the Lost",
+    "TelEkir": "Tel Ekir",
+    "TelEkirB": "Tel Ekir B",
+    "KingPyrotrsFortress": "King Pyrotr's Fortress",
+    "AinGolot": "Ain Golot",
+    "Underdocks": "Underdocks",
+    "Rothold": "Rothold",
+    "Scarwood": "Scarwood",
+    "Broodwood": "Broodwood",
+    "Caverns": "Caverns",
+    "Barracks": "Barracks",
+    "PartyCity": "Party City",
+    "DragonsRun": "Dragon's Run",
+    "TwilightIsles": "Twilight Isles",
+    "OrcIsland": "Orc Island"
+  },
+  "_display_names_note": "Official zone names where they differ from the scene identifier. Anything absent is rendered by splitting CamelCase."
+}

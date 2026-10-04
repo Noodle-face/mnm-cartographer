@@ -1,0 +1,40 @@
+{
+ "markers": [
+  {
+   "id": "d86e1501",
+   "x": 347.9,
+   "z": 11.1,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: NH_TeleportGem (6)",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "db3192e3",
+   "x": 373.8,
+   "z": 11.1,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: NH_TeleportGem (12)",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "a24d18f5",
+   "x": 403.6,
+   "z": -20.4,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: NH_TeleportGem (2)",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "a6eae9df",
+   "x": 423.5,
+   "z": -79.6,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: NH_TeleportGem (4)",
+   "added": "2026-10-04 14:17"
+  }
+ ]
+}

@@ -1,0 +1,13 @@
+{
+ "markers": [
+  {
+   "id": "58d63b8e",
+   "x": -18.7,
+   "z": 37.9,
+   "label": "to FallenPass",
+   "kind": "exit",
+   "note": "Zone line to FallenPass.\nScene object: FallenPassZoneLine Normal",
+   "added": "2026-10-04 14:17"
+  }
+ ]
+}
