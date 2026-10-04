@@ -1,8 +1,10 @@
 /target/
 
-# Map data: rendered from the game's asset bundles by the separate
-# mnm-mapmaker tool. Shipped as a release asset, not committed.
+# Map data: rendered from the game's asset bundles by this tool, into the user's
+# data directory. Derived from the game's copyrighted art, so never committed.
 # `maps` is a symlink during development, so match it with and without a slash.
 maps
 maps/
 *.mbtiles
+/dist/
+maps.dev
