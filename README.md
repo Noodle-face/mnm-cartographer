@@ -7,7 +7,10 @@ Runs on Linux and Windows. A single ~6 MB binary — no install, no runtime, no
 git clone: download the build for your platform from
 [Releases](https://github.com/Noodle-face/mnm-cartographer/releases) and run it.
 
-![Underdocks](docs/underdocks-ink.jpg)
+![The Underdocks harbour at full zoom](docs/underdocks-ink.jpg)
+
+*The Underdocks harbour, at the finest zoom level — rendered from the game's own
+mesh colliders, so what you see is what you can stand on.*
 
 ---
 
