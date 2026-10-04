@@ -276,11 +276,21 @@ and the seed markers are compiled in, so a lone executable is complete.
 Linux build needs the usual graphics headers
 (`libgl1-mesa-dev libxkbcommon-dev libwayland-dev`); see the CI workflow.
 
-Tag a version and CI builds both platforms:
+### Cutting a release
 
-```bash
-git tag v0.0.1 && git push --tags
-```
+1. Bump `version` in `Cargo.toml`, commit it.
+2. Tag it with a matching `v` prefix and push the tag:
+
+   ```bash
+   git tag -a v0.0.1 -m "v0.0.1" && git push origin v0.0.1
+   ```
+
+3. CI builds both platforms, checksums them, and opens a **draft** release.
+4. Download the artifacts, check they run, then publish the draft.
+
+The tag and `Cargo.toml` must agree or the build fails on purpose: the version
+reaches `--version`, the title bar and the stamp written into every generated
+map, so a mismatch ships a binary that misreports itself.
 
 The version lives in `Cargo.toml` and nowhere else: the title bar, `--version`,
 `--check` and the `generator` stamp written into every map all read it, so they

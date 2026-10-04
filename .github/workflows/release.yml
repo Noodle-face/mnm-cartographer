@@ -13,7 +13,25 @@ permissions:
   contents: write
 
 jobs:
+  # A tag that disagrees with Cargo.toml ships a binary whose --version lies,
+  # and the version is also stamped into every map it generates. Fail early.
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: tag matches Cargo.toml
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "tag=$tag  Cargo.toml=$crate"
+          if [ -n "${GITHUB_REF_NAME##v*}" ]; then
+            echo "not a version tag; skipping"; exit 0
+          fi
+          [ "$tag" = "$crate" ] || {
+            echo "::error::tag v$tag does not match Cargo.toml version $crate"; exit 1; }
+
   linux:
+    needs: check-version
     runs-on: ubuntu-22.04        # oldest supported glibc -> widest compatibility
     steps:
       - uses: actions/checkout@v4
@@ -35,12 +53,13 @@ jobs:
           v="${GITHUB_REF_NAME:-dev}"
           mkdir -p out/mnm-cartographer
           cp target/release/mnm-cartographer out/mnm-cartographer/
-          cp -r markers connections.json README.md out/mnm-cartographer/
+          cp README.md out/mnm-cartographer/
           tar -C out -czf "mnm-cartographer-$v-linux-x86_64.tar.gz" mnm-cartographer
       - uses: actions/upload-artifact@v4
         with: {name: linux, path: "*.tar.gz"}
 
   windows:
+    needs: check-version
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -60,8 +79,7 @@ jobs:
           $v = "${env:GITHUB_REF_NAME}"; if (-not $v) { $v = "dev" }
           New-Item -ItemType Directory -Force out/mnm-cartographer | Out-Null
           Copy-Item target/release/mnm-cartographer.exe out/mnm-cartographer/
-          Copy-Item -Recurse markers out/mnm-cartographer/markers
-          Copy-Item connections.json,README.md out/mnm-cartographer/
+          Copy-Item README.md out/mnm-cartographer/
           Compress-Archive -Path out/mnm-cartographer -DestinationPath "mnm-cartographer-$v-windows-x64.zip"
       - uses: actions/upload-artifact@v4
         with: {name: windows, path: "*.zip"}
@@ -73,15 +91,42 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with: {path: artifacts}
+      - name: collect and checksum
+        run: |
+          mkdir -p dist
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec mv {} dist/ \;
+          cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*
+          files: dist/*
+          # Published as a draft: the maintainer checks the artifacts actually
+          # run before anyone can download them.
+          draft: true
+          generate_release_notes: true
           body: |
-            Download the build for your platform, then grab `mnm-maps.zip`
-            from this release and unzip it so a `maps/` folder sits beside
-            the executable.
+            A single self-contained executable. No installer, no runtime, and
+            no map data to download &mdash; it builds the maps itself from your
+            own copy of the game.
 
-            **Linux** &mdash; `tar xzf mnm-cartographer-*.tar.gz && ./mnm-cartographer/mnm-cartographer`
-            **Windows** &mdash; unzip, run `mnm-cartographer.exe`
+            **Linux**
+            ```
+            tar xzf mnm-cartographer-*-linux-x86_64.tar.gz
+            ./mnm-cartographer/mnm-cartographer
+            ```
 
-            Run with `--check` to see what it found if maps don't appear.
+            **Windows** &mdash; unzip and run `mnm-cartographer.exe`.
+            Windows will warn that the publisher is unknown, because the
+            binary is not code-signed: **More info -> Run anyway**.
+
+            On first launch press **Generate maps**. It finds your game
+            install, reads the zones from the game's own files and renders
+            them. Expect a few minutes; maps are written to your user data
+            directory, not next to the executable, and come to about 96 MB.
+
+            Put the executable wherever you like &mdash; it does not need to
+            live in the game folder.
+
+            If something looks wrong, run `mnm-cartographer --check` and
+            include the output in a report.
+
+            Verify a download against `SHA256SUMS.txt`.
