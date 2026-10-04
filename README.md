@@ -3,9 +3,9 @@
 Zone maps for **Monsters & Memories** — pan, zoom, annotate, and follow the game
 between zones automatically.
 
-Runs on Linux and Windows. A single ~6 MB binary — no install, no runtime, no
-git clone: download the build for your platform from
-[Releases](https://github.com/Noodle-face/mnm-cartographer/releases) and run it.
+Runs on Linux and Windows. A single ~8 MB binary — no install, no runtime, no
+git clone. It **builds the maps itself** from the copy of the game you already
+own, so there is nothing else to download and no map data ships with it.
 
 ![The Underdocks harbour at full zoom](docs/underdocks-ink.jpg)
 
@@ -16,24 +16,56 @@ mesh colliders, so what you see is what you can stand on.*
 
 ## Install
 
-1. Download from [Releases](https://github.com/Noodle-face/mnm-cartographer/releases):
+1. Download the build for your platform from
+   [Releases](https://github.com/Noodle-face/mnm-cartographer/releases):
    - **Linux** — `mnm-cartographer-*-linux-x86_64.tar.gz`
    - **Windows** — `mnm-cartographer-*-windows-x64.zip`
-2. Download `mnm-maps-*.zip` from the same release.
-3. Unzip the maps so a `maps` folder sits **next to the application**:
+2. Put it wherever you like and run it.
 
-   ```
-   mnm-cartographer.exe       mnm-cartographer
-   maps/                      maps/
-   markers/                   markers/
-   connections.json           connections.json
-   ```
-4. Run it.
+That is the whole install. The executable is self-contained: put it on a desktop,
+a USB stick, anywhere. It does **not** need to live in the game folder, and it
+writes everything it needs into your user data directory on first run.
 
-Maps are a separate download so they can be updated without reinstalling the
-app, and vice versa. The app also looks in the platform data directory
-(`~/.local/share/mnm-cartographer`, `%APPDATA%\mnm-cartographer`) if you
-prefer to keep them there.
+On first launch you get a **No maps yet** panel. It looks for your game install,
+and if it cannot find one you can point at it. Press **Generate maps** and it
+builds every zone from the game's own files.
+
+## Generating maps
+
+Maps are rendered from the game's asset bundles on your own machine. Nothing is
+downloaded, the game does not need to be running, and the game files are only
+ever read.
+
+Generated maps go to your data directory, not next to the executable:
+
+```
+~/.local/share/mnm-cartographer/maps/        Linux
+%APPDATA%\mnm-cartographer\maps\             Windows
+```
+
+The whole set is about **96 MB** — roughly 12,000 tiles, WebP inside SQLite, one
+file per zone. The scan finds 45 zones and about 43 produce a map; the rest are
+unbuilt stubs with no walkable geometry. A large zone like Underdocks takes
+around 18 seconds and small ones under a second, with six building at once.
+
+### The Maps panel
+
+**Maps…** in the sidebar opens it at any time, not just on a first run:
+
+- the detected install, and a folder picker if it guessed wrong
+- every zone your install ships, read from the bundles themselves, each marked
+  if already built
+- a filter box and **All / None / Missing only**
+- **Rebuild N selected** — rebuilds exactly those, even if they already exist
+- **Build missing** — fills in gaps only
+
+Progress shows the zone being built, which of its four zoom levels is in flight,
+elapsed time and an estimate measured from the zones already done. **Cancel**
+stops between zones, and generating again **resumes** rather than starting over:
+a finished map is skipped before its (up to 2 GB) bundle is even opened.
+
+If the game updates, press **Rescan** — the zone list is cached against each
+bundle's size and timestamp, so it is only re-read when something changed.
 
 ## Using it
 
@@ -82,6 +114,19 @@ work and colour reinforces it.
 Markers are plain JSON in `markers/<zone>.json`, in world coordinates — diff
 them, share them, or hand-edit them.
 
+### Requirements
+
+Any marker, but mostly quests, can record **who can actually use it**: a minimum
+level, classes, a faction or standing, and anything else gating it — a
+prerequisite quest, an item, a key. These are fields rather than prose buried in
+the note, so the hover tooltip can say it in one line:
+
+> requires level 20 · Cleric, Druid · Ashira
+
+Leave a field blank for "no requirement". They are stored under `reqs` and are
+omitted from the file entirely when empty, so existing marker files are
+unaffected.
+
 ### Linking markers
 
 Two markers can be paired with the **Linked to** dropdown. Hovering either end
@@ -95,18 +140,138 @@ noted by hand. The `link` field takes a bare marker id for the same zone, or
 
 ---
 
+## Command line
+
+Everything here is optional — the GUI does all of it, and most people will never
+open a terminal. Commands are identical on both platforms; only the way you name
+the program differs.
+
+**Linux** (from the folder you unpacked it into):
+
+```bash
+./mnm-cartographer --check
+```
+
+**Windows** (PowerShell or Command Prompt, from the same folder):
+
+```powershell
+.\mnm-cartographer.exe --check
+```
+
+The examples below use the Linux form. Drop the `./` and add `.exe` for Windows.
+
+| command | what it does |
+|---|---|
+| `mnm-cartographer` | open the app |
+| `mnm-cartographer <dir>` | use `<dir>` for markers and `connections.json` |
+| `--version`, `-V` | print the version |
+| `--check` | what it found: version, search paths, zones, wiki edges, markers, the game log, and every marker link |
+| `--list-zones` | every zone your install ships, read from the game files, each marked `[x]` if built |
+| `--generate` | build all missing maps, no window |
+| `--generate <zone>` | build only zones matching that text, e.g. `--generate underdocks` |
+| `--generate --force` | rebuild even if the map already exists |
+| `--generate --out <dir>` | write maps somewhere other than the data directory |
+| `--clean` | delete generated maps (never touches markers or `connections.json`) |
+| `--clean --all` | also drop the zone cache, so the next run rescans every bundle |
+| `--log <path>` | point at a specific `Player.log` if auto-detection fails |
+
+Two environment variables:
+
+| | |
+|---|---|
+| `MNM_BUNDLES` | the game's `StandaloneWindows64` folder, overriding auto-detection |
+| `MNM_PROFILE` | print per-stage timings while generating (one zone at a time) |
+
+Setting one for a single command:
+
+```bash
+MNM_BUNDLES=/path/to/mnm_Data/StreamingAssets/aa/StandaloneWindows64 \
+  ./mnm-cartographer --list-zones
+```
+
+```powershell
+$env:MNM_BUNDLES = "C:\Games\Monsters and Memories\mnm_Data\StreamingAssets\aa\StandaloneWindows64"
+.\mnm-cartographer.exe --list-zones
+```
+
+### Typical use
+
+```bash
+./mnm-cartographer --list-zones            # what can be built
+./mnm-cartographer --generate              # build everything missing
+./mnm-cartographer --generate shadeddunes  # or just one
+./mnm-cartographer --check                 # confirm it found them
+./mnm-cartographer                         # open the app
+```
+
+The same on Windows:
+
+```powershell
+.\mnm-cartographer.exe --list-zones
+.\mnm-cartographer.exe --generate
+.\mnm-cartographer.exe --generate shadeddunes
+.\mnm-cartographer.exe --check
+.\mnm-cartographer.exe
+```
+
+Testing from a clean slate:
+
+```bash
+./mnm-cartographer --clean --all     # .\mnm-cartographer.exe --clean --all
+./mnm-cartographer --generate
+```
+
+### Developer commands
+
+Only useful if you are working on the renderer:
+
+| | |
+|---|---|
+| `--selftest` | check the image-processing primitives against known values |
+| `--dump-paper` | write the procedural parchment texture to `paper.png` |
+| `--extract <bundle> <scene>` | report the geometry a scene yields |
+| `--render <bundle> <scene> <ppu> <out.png>` | render one zone at one resolution |
+
+## Where maps come from
+
+Maps are rendered from the game's own Addressables bundles: the geometry is the
+zones' **mesh colliders**, so what the map shows is what you can stand on.
+Up-facing surfaces become floor, ceilings are discarded, walls are found as
+height discontinuities with the local slope subtracted out, and water is floor
+below the sea level each zone's own water objects sit at.
+
+Each zoom level is rendered natively rather than downsampled, because style
+constants are in pixels and geometry thresholds are in world units — that split
+is why zooming in reveals more detail instead of magnifying the same picture.
+
+The rendered maps are derived from Niche Worlds Cult's copyrighted art. They are
+generated on your machine from your own install and are deliberately **not**
+distributed with this program; please keep them to yourself.
+
 ## Building from source
 
 Rust 1.75+ and nothing else:
 
 ```bash
 cargo build --release
-./target/release/mnm-cartographer           # or pass a map directory
+./target/release/mnm-cartographer
 ```
 
-The result is a single **~6 MB** self-contained binary — no runtime, no
-installer, no bundled interpreter. egui draws its own UI on the GPU, so there
-is no system GUI toolkit to go missing on a user's machine.
+For a binary you intend to **give to someone else**, strip the build machine's
+paths first:
+
+```bash
+RUSTFLAGS="--remap-path-prefix=$HOME=~" cargo build --release
+```
+
+rustc bakes source paths into panic messages, and for dependencies those sit
+under your home directory — so an unremapped binary carries your username and
+home layout. CI already does this for released builds.
+
+The result is a single **~8 MB** self-contained binary — no runtime, no
+installer, no bundled interpreter. egui draws its own UI on the GPU, so there is
+no system GUI toolkit to go missing on a user's machine, and `connections.json`
+and the seed markers are compiled in, so a lone executable is complete.
 
 Linux build needs the usual graphics headers
 (`libgl1-mesa-dev libxkbcommon-dev libwayland-dev`); see the CI workflow.
@@ -114,23 +279,14 @@ Linux build needs the usual graphics headers
 Tag a version and CI builds both platforms:
 
 ```bash
-git tag v0.1.0 && git push --tags
+git tag v0.0.1 && git push --tags
 ```
 
-### Diagnosing
+The version lives in `Cargo.toml` and nowhere else: the title bar, `--version`,
+`--check` and the `generator` stamp written into every map all read it, so they
+cannot disagree.
 
-```bash
-mnm-cartographer --check
-```
 
-prints where it looked for maps, how many zones and markers it found, and
-whether it located the game's log.
-
-## Where maps come from
-
-Maps are generated by a separate tool, **mnm-mapmaker**, which renders them from
-the game's own asset bundles. That tool needs a game install; this one does not.
-This repository ships only the viewer — map data arrives as a release asset.
 
 ## Credit
 
