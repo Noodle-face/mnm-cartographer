@@ -280,7 +280,7 @@ impl App {
                         {
                             match gen::job::resolve_install(&p) {
                                 Some(_) => {
-                                    self.settings.install_dir = Some(p);
+                                    self.settings.install_dir = Some(p.to_path_buf());
                                     self.settings.save();
                                     self.gen_note.clear();
                                     self.refresh_zone_list();
@@ -475,7 +475,7 @@ impl App {
                     {
                         match gen::job::resolve_install(&p) {
                             Some(_) => {
-                                self.settings.install_dir = Some(p);
+                                self.settings.install_dir = Some(p.to_path_buf());
                                 self.settings.save();
                                 self.gen_note.clear();
                             }

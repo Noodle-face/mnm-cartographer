@@ -18,12 +18,18 @@ unity-rs-core = "0.5.2"
 webp = "0.3"
 rayon = "1"
 
-# Only to restore the default SIGPIPE handler; see main().
+# Native folder picker, per platform. On Linux the xdg-portal backend keeps GTK
+# out of the link, so the binary still needs no system toolkit; on Windows the
+# default (Win32) backend is the one that exists. Declaring the Linux-only
+# feature set for every target leaves Windows with no backend at all, and the
+# crate then resolves to nothing.
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
-# Native folder picker. xdg-portal on Linux keeps GTK out of the link,
-# so the binary still has no system toolkit dependency.
+libc = "0.2"   # only to restore the default SIGPIPE handler; see main()
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
+
+[target.'cfg(windows)'.dependencies]
+rfd = "0.15"
+
 
 [profile.release]
 opt-level = "z"      # optimise for size, not speed: the UI is not hot
