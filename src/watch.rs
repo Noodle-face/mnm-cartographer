@@ -15,9 +15,10 @@ pub struct ZoneWatcher {
     pub zone: Option<String>,
 }
 
-fn candidates() -> Vec<PathBuf> {
+pub fn candidates() -> Vec<PathBuf> {
     let mut v = Vec::new();
-    let rel = "AppData/LocalLow/Niche Worlds Cult/Monsters and Memories/Player.log";
+    let rel: PathBuf = ["AppData", "LocalLow", "Niche Worlds Cult",
+                        "Monsters and Memories", "Player.log"].iter().collect();
     if let Some(home) = dirs::home_dir() {
         // Proton / Wine prefixes, whichever user directory the prefix uses
         for pfx in [
@@ -26,7 +27,7 @@ fn candidates() -> Vec<PathBuf> {
         ] {
             if let Ok(rd) = std::fs::read_dir(&pfx) {
                 for e in rd.flatten() {
-                    v.push(e.path().join(rel));
+                    v.push(e.path().join(&rel));
                 }
             }
         }
@@ -34,7 +35,8 @@ fn candidates() -> Vec<PathBuf> {
     if let Some(d) = dirs::data_local_dir() {
         // Windows: %USERPROFILE%\AppData\LocalLow\...
         if let Some(p) = d.parent() {
-            v.push(p.join("LocalLow/Niche Worlds Cult/Monsters and Memories/Player.log"));
+            v.push(p.join("LocalLow").join("Niche Worlds Cult")
+                    .join("Monsters and Memories").join("Player.log"));
         }
     }
     v
