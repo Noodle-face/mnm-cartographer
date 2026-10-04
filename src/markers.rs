@@ -68,8 +68,56 @@ pub struct Marker {
     /// game ships no destination data of its own.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub link: String,
+    /// Who can actually use this. Kept as fields rather than prose in the note
+    /// so a marker can say "Cleric, level 20, Ashira" in a form that is
+    /// readable at a glance and could later be filtered on.
+    #[serde(default, skip_serializing_if = "Reqs::is_empty")]
+    pub reqs: Reqs,
     #[serde(default)]
     pub added: String,
+}
+
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Reqs {
+    /// Classes that can take or use it, free text: "Cleric" or "Cleric, Druid".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub class: String,
+    /// Faction or standing needed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub faction: String,
+    /// Minimum level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<u32>,
+    /// Anything else gating it: a prerequisite quest, an item, a key.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub other: String,
+}
+
+impl Reqs {
+    pub fn is_empty(&self) -> bool {
+        self.class.is_empty()
+            && self.faction.is_empty()
+            && self.level.is_none()
+            && self.other.is_empty()
+    }
+
+    /// One line, for a tooltip or the marker list.
+    pub fn summary(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(l) = self.level {
+            parts.push(format!("level {l}"));
+        }
+        if !self.class.is_empty() {
+            parts.push(self.class.clone());
+        }
+        if !self.faction.is_empty() {
+            parts.push(self.faction.clone());
+        }
+        if !self.other.is_empty() {
+            parts.push(self.other.clone());
+        }
+        parts.join(" \u{00b7} ")
+    }
 }
 fn default_kind() -> String { "note".into() }
 
@@ -104,6 +152,7 @@ impl MarkerSet {
             kind: kind.into(),
             note: note.into(),
             link: String::new(),
+            reqs: Reqs::default(),
             added: now_stamp(),
         });
         let _ = self.save();
