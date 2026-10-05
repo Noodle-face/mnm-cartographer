@@ -127,6 +127,24 @@ Leave a field blank for "no requirement". They are stored under `reqs` and are
 omitted from the file entirely when empty, so existing marker files are
 unaffected.
 
+### Sharing markers
+
+Any marker can be copied as a single line to paste into chat:
+
+```
+mnm1|underdocks|camp|-2500.0|2000.0|Griffon camp|pull from the north
+```
+
+Whoever receives it opens **Share…**, pastes it, and the marker lands on their
+map in the right zone. The format is readable on purpose: you can see where it
+points before trusting it.
+
+For more than one marker there are **packs** -- a JSON file of markers across
+any number of zones, written by **Export** and read by **Import**. Importing
+skips anything you already have within 12 world units of the same kind, so
+re-importing an updated pack adds only what is new rather than duplicating a
+camp everyone already marked.
+
 ### Linking markers
 
 Two markers can be paired with the **Linked to** dropdown. Hovering either end
@@ -174,6 +192,10 @@ The examples below use the Linux form. Drop the `./` and add `.exe` for Windows.
 | `--clean` | delete generated maps (never touches markers or `connections.json`) |
 | `--clean --all` | also drop the zone cache, so the next run rescans every bundle |
 | `--log <path>` | point at a specific `Player.log` if auto-detection fails |
+| `--share [text]` | print share codes for markers whose id or label matches |
+| `--export <file>` | write all markers as a pack others can import |
+| `--export <file> --zone <slug>` | just one zone |
+| `--import <file>` | merge a pack in, skipping markers you already have |
 
 Two environment variables:
 
@@ -228,6 +250,8 @@ Only useful if you are working on the renderer:
 | | |
 |---|---|
 | `--selftest` | check the image-processing primitives against known values |
+| `--debug-markers <n>` | scatter n markers per zone, to exercise the UI at volume |
+| `--clean-markers` | remove those again, leaving real markers alone |
 | `--dump-paper` | write the procedural parchment texture to `paper.png` |
 | `--extract <bundle> <scene>` | report the geometry a scene yields |
 | `--render <bundle> <scene> <ppu> <out.png>` | render one zone at one resolution |

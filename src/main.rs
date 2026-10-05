@@ -4,6 +4,7 @@
 
 mod connections;
 mod gen;
+mod share;
 
 /// Single source of truth: the version in Cargo.toml. Nothing else declares it,
 /// so the title bar, --version and the stamp written into generated maps can
@@ -167,6 +168,10 @@ struct App {
     gen_note: String,
     /// Maps panel: open state, the zone list, and what is ticked.
     maps_open: bool,
+    /// Share window: open state, the paste box, and the last result message.
+    share_open: bool,
+    share_input: String,
+    share_note: String,
     zone_list: Vec<gen::job::ZoneEntry>,
     zone_picked: std::collections::HashSet<String>,
     zone_filter: String,
@@ -215,6 +220,9 @@ impl App {
             gen_job: None,
             gen_note: String::new(),
             maps_open: false,
+            share_open: false,
+            share_input: String::new(),
+            share_note: String::new(),
             zone_list: Vec::new(),
             zone_picked: Default::default(),
             zone_filter: String::new(),
@@ -243,6 +251,163 @@ impl App {
             return;
         };
         self.zone_list = gen::job::list_zones(&install, &gen::job::maps_dir());
+    }
+
+    /// Share window: paste a code in, or move whole packs in and out.
+    fn share_window(&mut self, ctx: &egui::Context) {
+        if !self.share_open {
+            return;
+        }
+        let dim = egui::Color32::from_rgb(0x6a, 0x5f, 0x50);
+        let mut open = self.share_open;
+        egui::Window::new("Share markers")
+            .open(&mut open)
+            .default_width(460.0)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new("Paste a marker").strong().color(INK));
+                ui.label(egui::RichText::new(
+                    "Someone sends you a line starting mnm1| -- paste it here.")
+                    .small().color(dim));
+                ui.add(egui::TextEdit::multiline(&mut self.share_input)
+                    .desired_rows(2).desired_width(f32::INFINITY)
+                    .hint_text("mnm1|underdocks|camp|-2500.0|2000.0|Griffon camp"));
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(!self.share_input.trim().is_empty(),
+                        egui::Button::new("Add to map")).clicked()
+                    {
+                        self.share_note = self.accept_code();
+                    }
+                    if ui.button("Clear").clicked() {
+                        self.share_input.clear();
+                        self.share_note.clear();
+                    }
+                });
+
+                ui.separator();
+                ui.label(egui::RichText::new("Packs").strong().color(INK));
+                ui.label(egui::RichText::new(
+                    "A pack is a file of many markers. Importing skips anything \
+                     you already have within 12 units.").small().color(dim));
+                ui.horizontal(|ui| {
+                    if ui.button("Export all\u{2026}").clicked() {
+                        if let Some(p) = rfd::FileDialog::new()
+                            .set_file_name("markers-pack.json")
+                            .add_filter("marker pack", &["json"])
+                            .save_file()
+                        {
+                            self.share_note = self.export_pack(&p, None);
+                        }
+                    }
+                    let zone = self.pyr().map(|p| p.name.clone());
+                    if ui.add_enabled(zone.is_some(),
+                        egui::Button::new("Export this zone\u{2026}")).clicked()
+                    {
+                        if let Some(p) = rfd::FileDialog::new()
+                            .set_file_name("zone-markers.json")
+                            .add_filter("marker pack", &["json"])
+                            .save_file()
+                        {
+                            self.share_note = self.export_pack(&p, self.cur_slug());
+                        }
+                    }
+                    if ui.button("Import\u{2026}").clicked() {
+                        if let Some(p) = rfd::FileDialog::new()
+                            .add_filter("marker pack", &["json"])
+                            .pick_file()
+                        {
+                            self.share_note = self.import_pack(&p);
+                        }
+                    }
+                });
+                if !self.share_note.is_empty() {
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new(&self.share_note).color(INK));
+                }
+            });
+        self.share_open = open;
+    }
+
+    /// Slug of the zone on screen, as marker files are named.
+    fn cur_slug(&self) -> Option<String> {
+        self.pyr().map(|p| {
+            p.path.file_stem().unwrap_or_default().to_string_lossy().to_lowercase()
+        })
+    }
+
+    fn accept_code(&mut self) -> String {
+        let text = self.share_input.clone();
+        let d = match share::decode(&text) {
+            Ok(d) => d,
+            Err(e) => return format!("Could not read that: {e}"),
+        };
+        // Switch to the zone it belongs to, so the marker is visible at once.
+        let target = self.maps.iter().position(|m| {
+            m.path.file_stem().unwrap_or_default().to_string_lossy().to_lowercase()
+                == d.zone_slug
+        });
+        let Some(target) = target else {
+            return format!("That marker is for \"{}\", which you have no map for yet.",
+                           d.zone_slug);
+        };
+        if target != self.cur {
+            self.open_zone(target);
+        }
+        let stamp = markers::now_stamp();
+        let r = share::merge(&mut self.mset.items, std::slice::from_ref(&d.marker), &stamp);
+        let _ = self.mset.save();
+        self.share_input.clear();
+        if r.added == 0 {
+            "You already have a marker of that kind there.".to_string()
+        } else {
+            let (x, z) = (d.marker.x, d.marker.z);
+            format!("Added \"{}\" at {:.0}, {:.0}.",
+                    if d.marker.label.is_empty() { "marker" } else { &d.marker.label }, x, z)
+        }
+    }
+
+    fn export_pack(&self, path: &std::path::Path, only: Option<String>) -> String {
+        let mut pack = share::Pack {
+            format: 1, name: String::new(), author: String::new(), note: String::new(),
+            created: markers::now_stamp(), zones: Default::default(),
+        };
+        let dir = self.base.join("markers");
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|s| s.to_str()) != Some("json") { continue }
+                let slug = p.file_stem().unwrap_or_default().to_string_lossy().to_lowercase();
+                if only.as_ref().is_some_and(|o| *o != slug) { continue }
+                let set = MarkerSet::load(&p);
+                if !set.items.is_empty() { pack.zones.insert(slug.to_string(), set.items); }
+            }
+        }
+        match pack.write(path) {
+            Ok(()) => format!("Exported {} markers from {} zone(s).",
+                              pack.count(), pack.zones.len()),
+            Err(e) => format!("Could not write that file: {e}"),
+        }
+    }
+
+    fn import_pack(&mut self, path: &std::path::Path) -> String {
+        let pack = match share::Pack::read(path) {
+            Ok(p) => p,
+            Err(e) => return format!("Could not read that pack: {e}"),
+        };
+        let stamp = markers::now_stamp();
+        let (mut added, mut dup) = (0usize, 0usize);
+        for (slug, items) in &pack.zones {
+            let p = self.base.join("markers").join(format!("{slug}.json"));
+            let mut set = MarkerSet::load(&p);
+            let r = share::merge(&mut set.items, items, &stamp);
+            if r.added > 0 { let _ = set.save(); }
+            added += r.added; dup += r.duplicates;
+        }
+        // The zone on screen may have just gained markers.
+        if let Some(p) = self.maps.get(self.cur) {
+            self.mset = MarkerSet::load(&p.markers_path(&self.base));
+        }
+        format!("Imported {added} marker(s); {dup} were already on your map.")
     }
 
     /// The maps window: pick zones and (re)build them. Reachable whether or
@@ -626,6 +791,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _f: &mut eframe::Frame) {
         // Drawn first so it floats above the map and the side panel.
         self.maps_window(ctx);
+        self.share_window(ctx);
         // ---- follow the game between zones -------------------------------
         let t = ctx.input(|i| i.time);
         if self.follow && t - self.last_poll > 2.0 {
@@ -783,7 +949,13 @@ impl App {
 
             // ---- markers -------------------------------------------------
             ui.add_space(8.0);
-            ui.heading(format!("Markers ({})", self.mset.items.len()));
+            ui.horizontal(|ui| {
+                ui.heading(format!("Markers ({})", self.mset.items.len()));
+                if ui.small_button("Share\u{2026}").on_hover_text(
+                    "Paste a marker someone sent you, or export your own").clicked() {
+                    self.share_open = true;
+                }
+            });
             let mut open_id = None;
             let mut del_id = None;
             egui::ScrollArea::vertical().id_salt("marks").show(ui, |ui| {
@@ -1249,6 +1421,7 @@ impl App {
         let Some(ed) = &mut self.editing else { return };
         let mut open = true;
         let mut save = false;
+        let mut copy_code = false;
         let mut cancel = false;
         let mut delete = false;
         let mut go: Option<usize> = None;
@@ -1328,6 +1501,12 @@ impl App {
                     if ui.button(if ed.creating { "Create" } else { "Save" }).clicked() { save = true }
                     if ui.button("Cancel").clicked() { cancel = true }
                     if !ed.creating && ui.button("Delete").clicked() { delete = true }
+                    if !ed.creating && ui.button("Copy share code")
+                        .on_hover_text("A line you can paste into chat for someone \
+                                        else to import").clicked()
+                    {
+                        copy_code = true;
+                    }
                     if let Some(z) = travel {
                         if ui.button(format!("Open {zname}")).clicked() { go = Some(z) }
                     }
@@ -1336,12 +1515,27 @@ impl App {
 
         let creating = ed.creating;
         let id = ed.id.clone();
+
         let (label, kindi, note, link) =
             (ed.label.clone(), ed.kind, ed.note.clone(), ed.link.clone());
         let mut reqs = ed.reqs.clone();
         // A blank or unparseable level means "no level requirement" rather
         // than zero, which would read as a real gate.
         reqs.level = ed.req_level.trim().parse::<u32>().ok().filter(|l| *l > 0);
+        if copy_code {
+            // Encode what is on screen rather than what was last saved, so
+            // editing a label and sharing in one go does what it looks like.
+            let slug = self.cur_slug();
+            let found = self.mset.items.iter().find(|m| m.id == id).cloned();
+            if let (Some(slug), Some(mut snap)) = (slug, found) {
+                snap.label = label.clone();
+                snap.note = note.clone();
+                snap.kind = KINDS[kindi].key.to_string();
+                snap.reqs = reqs.clone();
+                ctx.output_mut(|o| o.copied_text = share::encode(&slug, &snap));
+                self.status = "share code copied to the clipboard".into();
+            }
+        }
         if save {
             if let Some(m) = self.mset.get_mut(&id) {
                 m.label = label; m.kind = KINDS[kindi].key.into(); m.note = note;
@@ -1386,7 +1580,8 @@ fn main() -> eframe::Result<()> {
     let mut consumed = std::collections::HashSet::new();
     for (i, a) in args.iter().enumerate() {
         let takes = match a.as_str() {
-            "--log" | "--out" => 1,
+            "--log" | "--out" | "--export" | "--import" | "--zone" | "--share"
+            | "--debug-markers" => 1,
             // Optional value: only if the next argument is not itself a flag.
             "--generate" => usize::from(args.get(i + 1).is_some_and(|n| !n.starts_with("--"))),
             "--extract" => 2,
@@ -1508,6 +1703,160 @@ fn main() -> eframe::Result<()> {
         }
         buf.save(&out).unwrap();
         println!("wrote {out} in {:.1}s total", t0.elapsed().as_secs_f32());
+        return Ok(());
+    }
+
+    // Scatter markers across every zone, for exercising the UI at volume.
+    // Not something a release needs, but reviewing marker rendering, the list
+    // and import performance all want more than the 45 real ones.
+    if let Some(i) = args.iter().position(|a| a == "--debug-markers") {
+        let per: usize = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(25);
+        let maps = discover_all();
+        if maps.is_empty() {
+            eprintln!("no maps found; generate some first");
+            return Ok(());
+        }
+        let stamp = markers::now_stamp();
+        let kinds: Vec<&str> = markers::KINDS.iter().map(|k| k.key).collect();
+        let mut total = 0usize;
+        // A fixed sequence, so a debug run is reproducible and a bug seen once
+        // can be seen again.
+        let mut seed: u64 = 0x5EED_1234_ABCD_0001;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for p in &maps {
+            let [ax, bx, az, bz] = p.extent;
+            let path = p.markers_path(&base);
+            let mut set = MarkerSet::load(&path);
+            for n in 0..per {
+                let fx = (next() % 10_000) as f64 / 10_000.0;
+                let fz = (next() % 10_000) as f64 / 10_000.0;
+                let k = kinds[(next() % kinds.len() as u64) as usize];
+                set.items.push(markers::Marker {
+                    id: markers::new_id(),
+                    x: ((ax + (bx - ax) * fx) * 100.0).round() / 100.0,
+                    z: ((az + (bz - az) * fz) * 100.0).round() / 100.0,
+                    label: format!("debug {n}"),
+                    kind: k.to_string(),
+                    note: "generated by --debug-markers; remove with --clean-markers".into(),
+                    link: String::new(),
+                    reqs: Default::default(),
+                    added: stamp.clone(),
+                });
+                total += 1;
+            }
+            let _ = set.save();
+        }
+        println!("added {total} debug markers across {} zones", maps.len());
+        println!("remove them again with --clean-markers");
+        return Ok(());
+    }
+
+    // Drop every marker the debug scatter made, leaving real ones alone.
+    if args.iter().any(|a| a == "--clean-markers") {
+        let dir = base.join("markers");
+        let (mut removed, mut kept) = (0usize, 0usize);
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|s| s.to_str()) != Some("json") { continue }
+                let mut set = MarkerSet::load(&p);
+                let before = set.items.len();
+                set.items.retain(|m| !m.note.contains("--debug-markers"));
+                removed += before - set.items.len();
+                kept += set.items.len();
+                if before != set.items.len() { let _ = set.save(); }
+            }
+        }
+        println!("removed {removed} debug markers, kept {kept} real ones");
+        return Ok(());
+    }
+
+    // --- sharing -------------------------------------------------------
+    // Export every marker, or one zone's, as a pack others can import.
+    if let Some(i) = args.iter().position(|a| a == "--export") {
+        let out = args.get(i + 1).map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("markers-pack.json"));
+        let only = args.iter().position(|a| a == "--zone")
+            .and_then(|j| args.get(j + 1)).map(|s| s.to_lowercase());
+        let mut pack = share::Pack {
+            format: 1,
+            name: String::new(),
+            author: String::new(),
+            note: String::new(),
+            created: markers::now_stamp(),
+            zones: Default::default(),
+        };
+        let dir = base.join("markers");
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|s| s.to_str()) != Some("json") { continue }
+                let slug = p.file_stem().unwrap_or_default().to_string_lossy().to_lowercase();
+                if only.as_ref().is_some_and(|o| *o != slug) { continue }
+                let set = MarkerSet::load(&p);
+                if !set.items.is_empty() {
+                    pack.zones.insert(slug.to_string(), set.items);
+                }
+            }
+        }
+        match pack.write(&out) {
+            Ok(()) => println!("wrote {} -- {} markers across {} zones",
+                               out.display(), pack.count(), pack.zones.len()),
+            Err(e) => eprintln!("could not write {}: {e}", out.display()),
+        }
+        return Ok(());
+    }
+
+    // Merge someone else's pack in, skipping markers already present.
+    if let Some(i) = args.iter().position(|a| a == "--import") {
+        let Some(src) = args.get(i + 1).map(PathBuf::from) else {
+            eprintln!("usage: --import <pack.json>"); return Ok(());
+        };
+        let pack = match share::Pack::read(&src) {
+            Ok(p) => p,
+            Err(e) => { eprintln!("{}: {e}", src.display()); return Ok(()) }
+        };
+        println!("{} -- {} markers across {} zones{}", src.display(), pack.count(),
+                 pack.zones.len(),
+                 if pack.name.is_empty() { String::new() } else { format!("  ({})", pack.name) });
+        let stamp = markers::now_stamp();
+        let (mut added, mut dup) = (0usize, 0usize);
+        for (slug, items) in &pack.zones {
+            let path = base.join("markers").join(format!("{slug}.json"));
+            let mut set = MarkerSet::load(&path);
+            let r = share::merge(&mut set.items, items, &stamp);
+            if r.added > 0 { let _ = set.save(); }
+            println!("  {:<22} +{:<4} {} already present", slug, r.added, r.duplicates);
+            added += r.added; dup += r.duplicates;
+        }
+        println!("{added} added, {dup} skipped as duplicates");
+        return Ok(());
+    }
+
+    // Print a share code for a marker, by id or by label.
+    if let Some(i) = args.iter().position(|a| a == "--share") {
+        let want = args.get(i + 1).map(|s| s.to_lowercase()).unwrap_or_default();
+        let dir = base.join("markers");
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|s| s.to_str()) != Some("json") { continue }
+                let slug = p.file_stem().unwrap_or_default().to_string_lossy().to_lowercase();
+                for m in MarkerSet::load(&p).items {
+                    if want.is_empty()
+                        || m.id.to_lowercase() == want
+                        || m.label.to_lowercase().contains(&want)
+                    {
+                        println!("{}", share::encode(&slug, &m));
+                    }
+                }
+            }
+        }
         return Ok(());
     }
 

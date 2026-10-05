@@ -48,6 +48,11 @@ pub const KINDS: &[KindInfo] = &[
     KindInfo { key: "note", label: "Note",     color: egui::Color32::from_rgb(0xd4, 0x55, 0x9a), shape: Shape::Cross,    about: "Anything else worth remembering" },
 ];
 
+/// A fresh marker id.
+pub fn new_id() -> String {
+    format!("{:08x}", fastrand_id())
+}
+
 pub fn kind(key: &str) -> &'static KindInfo {
     KINDS.iter().find(|k| k.key == key).unwrap_or(&KINDS[7])
 }
@@ -178,7 +183,7 @@ impl MarkerSet {
     }
 }
 
-fn now_stamp() -> String {
+pub fn now_stamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     // minimal civil-date conversion; avoids pulling in a date crate for one string
@@ -199,7 +204,7 @@ fn now_stamp() -> String {
     format!("{y:04}-{:02}-{:02} {h:02}:{mi:02}", m + 1, d + 1)
 }
 
-fn fastrand_id() -> u32 {
+pub fn fastrand_id() -> u32 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let n = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(1);
     n.wrapping_mul(2654435761).wrapping_add(std::process::id())

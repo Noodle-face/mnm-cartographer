@@ -1,6 +1,6 @@
 [package]
 name = "mnm-cartographer"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 description = "Zone maps for Monsters & Memories"
 license = "MIT"
