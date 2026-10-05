@@ -74,6 +74,8 @@ bundle's size and timestamp, so it is only re-read when something changed.
 | drag | pan |
 | wheel | zoom (fit is as far out as it goes) |
 | `F` / `Home` | fit the whole map |
+| `Ctrl+Z` | undo the last marker edit |
+| shift + right-click | copy a location to paste in chat |
 | right-click the map | add a marker |
 | left-click a marker | open its note, or follow its link |
 | right-click a marker | edit or delete |
@@ -127,6 +129,17 @@ Leave a field blank for "no requirement". They are stored under `reqs` and are
 omitted from the file entirely when empty, so existing marker files are
 unaffected.
 
+### Finding things
+
+With a community pack imported, a zone can hold hundreds of markers. The marker
+list has a **find** box over labels, notes and requirements, a checkbox per kind,
+and **mine / imported** toggles -- so you can hide someone else's clutter
+without deleting their work. Clicking a marker in the list centres the map on
+it. The zone dropdown filters as you type.
+
+Every marker remembers where it came from: blank for ones you placed, otherwise
+the pack it arrived in, shown as a dot in the list and on hover.
+
 ### Sharing markers
 
 Any marker can be copied as a single line to paste into chat:
@@ -136,14 +149,15 @@ mnm1|underdocks|camp|-2500.0|2000.0|Griffon camp|pull from the north
 ```
 
 Whoever receives it opens **Share…**, pastes it, and the marker lands on their
-map in the right zone. The format is readable on purpose: you can see where it
+map in the right zone, switching zones if needed. The format is readable on purpose: you can see where it
 points before trusting it.
 
 For more than one marker there are **packs** -- a JSON file of markers across
 any number of zones, written by **Export** and read by **Import**. Importing
 skips anything you already have within 12 world units of the same kind, so
 re-importing an updated pack adds only what is new rather than duplicating a
-camp everyone already marked.
+camp everyone already marked. Importing shows what it would add, per zone,
+before writing anything.
 
 ### Linking markers
 

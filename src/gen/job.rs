@@ -294,6 +294,13 @@ pub struct Settings {
     /// Explicit game install, when auto-detection did not find it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_dir: Option<PathBuf>,
+    /// The zone that was open last, so a restart resumes where you were
+    /// rather than at whatever sorts first.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub last_zone: String,
+    /// Window size in logical points.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<(f32, f32)>,
 }
 
 impl Settings {

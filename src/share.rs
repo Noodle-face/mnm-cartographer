@@ -112,6 +112,7 @@ pub fn decode(text: &str) -> Result<Decoded> {
             note,
             link: String::new(),
             reqs: Reqs { other, ..Default::default() },
+            src: String::new(),
             added: String::new(),
         },
     })
@@ -171,7 +172,12 @@ pub struct MergeReport {
 /// A marker counts as already present when it is within `SAME_PLACE` units and
 /// carries the same kind. Labels are not compared: the same camp described two
 /// ways is still one camp.
-pub fn merge(existing: &mut Vec<Marker>, incoming: &[Marker], stamp: &str) -> MergeReport {
+pub fn merge_from(
+    existing: &mut Vec<Marker>,
+    incoming: &[Marker],
+    stamp: &str,
+    source: &str,
+) -> MergeReport {
     let mut r = MergeReport { added: 0, duplicates: 0 };
     for m in incoming {
         let dup = existing.iter().any(|e| {
@@ -188,6 +194,9 @@ pub fn merge(existing: &mut Vec<Marker>, incoming: &[Marker], stamp: &str) -> Me
         }
         if n.added.is_empty() {
             n.added = stamp.to_string();
+        }
+        if !source.is_empty() && n.src.is_empty() {
+            n.src = source.to_string();
         }
         // A link points at an id in the source set and will not resolve here.
         n.link.clear();

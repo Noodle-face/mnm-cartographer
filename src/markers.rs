@@ -78,6 +78,15 @@ pub struct Marker {
     /// readable at a glance and could later be filtered on.
     #[serde(default, skip_serializing_if = "Reqs::is_empty")]
     pub reqs: Reqs,
+    /// Where this marker came from. Empty means you placed it; otherwise the
+    /// name of the pack it was imported from.
+    ///
+    /// Recorded from the start because retrofitting provenance once people
+    /// have thousands of markers means guessing, and "hide everyone else's
+    /// clutter without deleting it" is the whole reason shared packs stay
+    /// usable.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub src: String,
     #[serde(default)]
     pub added: String,
 }
@@ -135,6 +144,43 @@ struct File {
 pub struct MarkerSet {
     pub path: PathBuf,
     pub items: Vec<Marker>,
+    /// Snapshots taken before each destructive edit. Markers are hand-made and
+    /// a delete was previously unrecoverable.
+    undo: Vec<Vec<Marker>>,
+}
+
+/// How many edits back you can go. Deep enough to rescue a mistake, shallow
+/// enough that a zone with thousands of markers does not hoard memory.
+const UNDO_DEPTH: usize = 25;
+
+impl MarkerSet {
+    pub fn empty(path: PathBuf) -> Self {
+        Self { path, items: Vec::new(), undo: Vec::new() }
+    }
+
+    /// Record the current state so the next edit can be undone.
+    pub fn checkpoint(&mut self) {
+        self.undo.push(self.items.clone());
+        if self.undo.len() > UNDO_DEPTH {
+            self.undo.remove(0);
+        }
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    /// Step back one edit. Returns false when there is nothing to undo.
+    pub fn undo(&mut self) -> bool {
+        match self.undo.pop() {
+            Some(prev) => {
+                self.items = prev;
+                let _ = self.save();
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 impl MarkerSet {
@@ -144,7 +190,7 @@ impl MarkerSet {
             .and_then(|s| serde_json::from_str::<File>(&s).ok())
             .map(|f| f.markers)
             .unwrap_or_default();
-        Self { path: path.to_path_buf(), items }
+        Self { path: path.to_path_buf(), items, undo: Vec::new() }
     }
 
     pub fn add(&mut self, x: f64, z: f64, label: &str, kind: &str, note: &str) -> String {
@@ -158,6 +204,7 @@ impl MarkerSet {
             note: note.into(),
             link: String::new(),
             reqs: Reqs::default(),
+            src: String::new(),
             added: now_stamp(),
         });
         let _ = self.save();

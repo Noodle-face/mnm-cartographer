@@ -129,6 +129,13 @@ fn asset_base() -> PathBuf {
         .unwrap_or_else(app_dir)
 }
 
+struct PendingImport {
+    label: String,
+    pack: share::Pack,
+    /// (zone slug, would add, already present)
+    effect: Vec<(String, usize, usize)>,
+}
+
 struct Editing {
     id: String,
     label: String,
@@ -172,6 +179,23 @@ struct App {
     share_open: bool,
     share_input: String,
     share_note: String,
+    /// Marker kinds hidden from the map and list. A zone carrying a community
+    /// pack can hold hundreds; without this the map becomes unreadable.
+    hidden_kinds: std::collections::HashSet<String>,
+    /// Show markers you placed / markers that came from a pack.
+    show_mine: bool,
+    show_imported: bool,
+    /// Live filter over marker labels and notes.
+    marker_find: String,
+    /// Live filter over the zone dropdown.
+    zone_find: String,
+    /// A world position to bring into view on the next frame, once the
+    /// viewport size is known.
+    pending_center: Option<(f64, f64)>,
+    /// A pack waiting for confirmation, with what it would do per zone.
+    /// Importing is a bulk edit of hand-made data; showing the effect first
+    /// is cheaper than undoing it afterwards.
+    pending_import: Option<PendingImport>,
     zone_list: Vec<gen::job::ZoneEntry>,
     zone_picked: std::collections::HashSet<String>,
     zone_filter: String,
@@ -195,16 +219,24 @@ impl App {
         let graph = connections::Graph::load(&base);
         let watcher = watch::ZoneWatcher::new(log);
         let names: Vec<String> = maps.iter().map(|m| m.name.clone()).collect();
+        let settings = gen::job::Settings::load();
+        // Prefer wherever the game says you are; otherwise resume the zone
+        // that was open last.
         let cur = watcher
             .zone
             .as_deref()
             .and_then(|z| watch::match_zone(z, &names))
+            .or_else(|| {
+                let want = settings.last_zone.to_lowercase();
+                (!want.is_empty())
+                    .then(|| maps.iter().position(|m| m.name.to_lowercase() == want))
+                    .flatten()
+            })
             .unwrap_or(0);
-        let settings = gen::job::Settings::load();
         let mset = maps
             .get(cur)
             .map(|p| MarkerSet::load(&p.markers_path(&base)))
-            .unwrap_or_else(|| MarkerSet { path: base.join("markers/none.json"), items: vec![] });
+            .unwrap_or_else(|| MarkerSet::empty(base.join("markers/none.json")));
         Self {
             base, maps, cur, mset, graph, watcher,
             follow: true, show_legend: true,
@@ -223,6 +255,13 @@ impl App {
             share_open: false,
             share_input: String::new(),
             share_note: String::new(),
+            hidden_kinds: Default::default(),
+            show_mine: true,
+            show_imported: true,
+            marker_find: String::new(),
+            zone_find: String::new(),
+            pending_center: None,
+            pending_import: None,
             zone_list: Vec::new(),
             zone_picked: Default::default(),
             zone_filter: String::new(),
@@ -316,7 +355,7 @@ impl App {
                             .add_filter("marker pack", &["json"])
                             .pick_file()
                         {
-                            self.share_note = self.import_pack(&p);
+                            self.share_note = self.preview_pack(&p);
                         }
                     }
                 });
@@ -324,8 +363,60 @@ impl App {
                     ui.add_space(6.0);
                     ui.label(egui::RichText::new(&self.share_note).color(INK));
                 }
+                let mut apply = false;
+                let mut cancel = false;
+                if let Some(p) = &self.pending_import {
+                    ui.separator();
+                    ui.label(egui::RichText::new(format!("Pack: {}", p.label))
+                        .strong().color(INK));
+                    if !p.pack.author.is_empty() {
+                        ui.label(egui::RichText::new(format!("by {}", p.pack.author))
+                            .small().color(dim));
+                    }
+                    egui::ScrollArea::vertical().max_height(160.0)
+                        .id_salt("imp").show(ui, |ui| {
+                        for (slug, add, had) in &p.effect {
+                            if *add == 0 && *had == 0 { continue }
+                            ui.label(egui::RichText::new(format!(
+                                "{slug:<22} +{add}   ({had} already there)"))
+                                .size(11.0)
+                                .color(if *add > 0 { INK } else { dim }));
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Import these").clicked() { apply = true }
+                        if ui.button("Cancel").clicked() { cancel = true }
+                    });
+                }
+                if apply { self.share_note = self.apply_import(); }
+                if cancel { self.pending_import = None; self.share_note.clear(); }
             });
         self.share_open = open;
+    }
+
+    /// Whether a marker passes the current filters.
+    ///
+    /// Shared by the map and the list deliberately: two separate conditions
+    /// drift, and a marker visible in one but not the other is baffling.
+    fn visible(&self, m: &markers::Marker) -> bool {
+        if self.hidden_kinds.contains(&m.kind) {
+            return false;
+        }
+        let imported = !m.src.is_empty();
+        if imported && !self.show_imported {
+            return false;
+        }
+        if !imported && !self.show_mine {
+            return false;
+        }
+        let q = self.marker_find.trim().to_lowercase();
+        if !q.is_empty() {
+            let hay = format!("{} {} {}", m.label, m.note, m.reqs.summary()).to_lowercase();
+            if !hay.contains(&q) {
+                return false;
+            }
+        }
+        true
     }
 
     /// Slug of the zone on screen, as marker files are named.
@@ -354,7 +445,9 @@ impl App {
             self.open_zone(target);
         }
         let stamp = markers::now_stamp();
-        let r = share::merge(&mut self.mset.items, std::slice::from_ref(&d.marker), &stamp);
+        self.mset.checkpoint();
+        let r = share::merge_from(
+            &mut self.mset.items, std::slice::from_ref(&d.marker), &stamp, "shared code");
         let _ = self.mset.save();
         self.share_input.clear();
         if r.added == 0 {
@@ -389,23 +482,46 @@ impl App {
         }
     }
 
-    fn import_pack(&mut self, path: &std::path::Path) -> String {
+    /// Work out what a pack would do, without writing anything.
+    fn preview_pack(&mut self, path: &std::path::Path) -> String {
         let pack = match share::Pack::read(path) {
             Ok(p) => p,
             Err(e) => return format!("Could not read that pack: {e}"),
         };
+        let label = if pack.name.is_empty() {
+            path.file_stem().unwrap_or_default().to_string_lossy().to_string()
+        } else {
+            pack.name.clone()
+        };
+        let stamp = markers::now_stamp();
+        let mut effect = Vec::new();
+        for (slug, items) in &pack.zones {
+            // Merge into a throwaway copy purely to count.
+            let p = self.base.join("markers").join(format!("{slug}.json"));
+            let mut items_now = MarkerSet::load(&p).items;
+            let r = share::merge_from(&mut items_now, items, &stamp, &label);
+            effect.push((slug.clone(), r.added, r.duplicates));
+        }
+        effect.sort_by(|a, b| b.1.cmp(&a.1));
+        let total: usize = effect.iter().map(|e| e.1).sum();
+        self.pending_import = Some(PendingImport { label, pack, effect });
+        format!("{total} marker(s) would be added \u{2014} review below.")
+    }
+
+    /// Actually write the previewed pack.
+    fn apply_import(&mut self) -> String {
+        let Some(p) = self.pending_import.take() else { return String::new() };
         let stamp = markers::now_stamp();
         let (mut added, mut dup) = (0usize, 0usize);
-        for (slug, items) in &pack.zones {
-            let p = self.base.join("markers").join(format!("{slug}.json"));
-            let mut set = MarkerSet::load(&p);
-            let r = share::merge(&mut set.items, items, &stamp);
+        for (slug, items) in &p.pack.zones {
+            let path = self.base.join("markers").join(format!("{slug}.json"));
+            let mut set = MarkerSet::load(&path);
+            let r = share::merge_from(&mut set.items, items, &stamp, &p.label);
             if r.added > 0 { let _ = set.save(); }
             added += r.added; dup += r.duplicates;
         }
-        // The zone on screen may have just gained markers.
-        if let Some(p) = self.maps.get(self.cur) {
-            self.mset = MarkerSet::load(&p.markers_path(&self.base));
+        if let Some(m) = self.maps.get(self.cur) {
+            self.mset = MarkerSet::load(&m.markers_path(&self.base));
         }
         format!("Imported {added} marker(s); {dup} were already on your map.")
     }
@@ -525,6 +641,25 @@ impl App {
                             // Explicitly chosen zones are rebuilt even if present.
                             self.gen_job = Some(gen::job::Job::start(
                                 install, out, Some(self.zone_picked.clone()), true));
+                        }
+                    }
+                    let live = self.watcher.zone.clone();
+                    if ui.add_enabled(found.is_some() && !busy && live.is_some(),
+                        egui::Button::new("Just my current zone"))
+                        .on_hover_text("Build only the zone the game says you are in")
+                        .clicked()
+                    {
+                        if let (Some(install), Some(z)) = (found.clone(), live) {
+                            let out = gen::job::maps_dir();
+                            std::fs::create_dir_all(&out).ok();
+                            // Match loosely: the log name and the scene name
+                            // are not always spelled the same.
+                            let want = gen::zones::slug(&z);
+                            let pick: std::collections::HashSet<String> = self.zone_list.iter()
+                                .filter(|e| gen::zones::slug(&e.name) == want)
+                                .map(|e| e.name.clone()).collect();
+                            self.gen_job = Some(gen::job::Job::start(
+                                install, out, Some(pick), true));
                         }
                     }
                     if ui.add_enabled(found.is_some() && !busy,
@@ -681,6 +816,10 @@ impl App {
     fn open_zone(&mut self, i: usize) {
         if i >= self.maps.len() || i == self.cur && self.fitted { return }
         self.cur = i;
+        if self.settings.last_zone != self.maps[i].name {
+            self.settings.last_zone = self.maps[i].name.clone();
+            self.settings.save();
+        }
         self.textures.clear();
         self.fitted = false;
         let p = &self.maps[self.cur];
@@ -789,6 +928,25 @@ fn shape_points(shape: Shape, c: egui::Pos2, r: f32) -> Vec<egui::Pos2> {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _f: &mut eframe::Frame) {
+        // Generation can run for minutes; put its progress in the title so a
+        // minimised or background window still says how far along it is.
+        let want_title = match self.gen_job.as_ref().filter(|j| !j.done) {
+            Some(j) => {
+                let (frac, _) = j.progress();
+                match &j.last {
+                    Some(gen::job::Stage::Zone { name, .. }) =>
+                        format!("M&M Cartographer {VERSION} \u{2014} {:.0}% {name}",
+                                frac * 100.0),
+                    _ => format!("M&M Cartographer {VERSION} \u{2014} starting\u{2026}"),
+                }
+            }
+            None => format!("M&M Cartographer {VERSION}"),
+        };
+        if want_title != self.title_shown {
+            self.title_shown = want_title.clone();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(want_title));
+        }
+
         // Drawn first so it floats above the map and the side panel.
         self.maps_window(ctx);
         self.share_window(ctx);
@@ -815,12 +973,21 @@ impl eframe::App for App {
             }
         }
 
+        let mut undo = false;
         ctx.input(|i| {
             if i.key_pressed(egui::Key::Escape) { self.editing = None }
             if i.key_pressed(egui::Key::F) || i.key_pressed(egui::Key::Home) {
                 self.fitted = false;
             }
+            // Only when no text field has focus, or Ctrl+Z in a note would
+            // undo the whole edit instead of a few characters.
+            if i.modifiers.command && i.key_pressed(egui::Key::Z) {
+                undo = true;
+            }
         });
+        if undo && self.editing.is_none() && self.mset.undo() {
+            self.status = "undid the last marker edit".into();
+        }
 
         self.sidebar(ctx);
         self.map(ctx);
@@ -836,6 +1003,7 @@ impl eframe::App for App {
                     ui.label(egui::RichText::new("This cannot be undone.").weak().size(11.0));
                     ui.horizontal(|ui| {
                         if ui.button("Remove them").clicked() {
+                            self.mset.checkpoint();
                             self.mset.items.clear();
                             let _ = self.mset.save();
                             self.confirm_clear = false;
@@ -859,13 +1027,30 @@ impl App {
                 .width(230.0)
                 .selected_text(pretty.get(self.cur).cloned().unwrap_or_default())
                 .show_ui(ui, |ui| {
+                    // 43 zones is too many to scan by eye.
+                    let r = ui.add(egui::TextEdit::singleline(&mut self.zone_find)
+                        .desired_width(f32::INFINITY).hint_text("type to filter\u{2026}"));
+                    r.request_focus();
+                    ui.separator();
+                    let q = self.zone_find.trim().to_lowercase();
                     let mut order: Vec<usize> = (0..pretty.len()).collect();
                     order.sort_by_key(|&i| pretty[i].to_lowercase());
+                    let mut shown = 0;
                     for i in order {
+                        if !q.is_empty() && !pretty[i].to_lowercase().contains(&q) {
+                            continue;
+                        }
+                        shown += 1;
                         ui.selectable_value(&mut pick, i, &pretty[i]);
                     }
+                    if shown == 0 {
+                        ui.label(egui::RichText::new("no zone matches").weak().size(11.0));
+                    }
                 });
-            if pick != self.cur { self.open_zone(pick) }
+            if pick != self.cur {
+                self.open_zone(pick);
+                self.zone_find.clear();
+            }
 
             // jump back to wherever the game actually is
             let live = self.watcher.zone.clone();
@@ -891,6 +1076,12 @@ impl App {
                     "Remove every marker in this zone").clicked() {
                     self.confirm_clear = true;
                 }
+                if ui.add_enabled(self.mset.can_undo(), egui::Button::new("Undo"))
+                    .on_hover_text("Ctrl+Z \u{2014} step back one marker edit").clicked()
+                {
+                    self.mset.undo();
+                    self.status = "undid the last marker edit".into();
+                }
                 if ui.button("Maps\u{2026}").on_hover_text(
                     "Generate or rebuild zone maps from your game install").clicked() {
                     self.maps_open = true;
@@ -912,6 +1103,7 @@ impl App {
             ui.add_space(6.0);
             ui.label(egui::RichText::new(
                 "right-click the map to add a marker\n\
+                 shift+right-click to copy a location\n\
                  left-click a marker to open its note",
             ).size(10.0).weak());
 
@@ -956,20 +1148,54 @@ impl App {
                     self.share_open = true;
                 }
             });
+            // Filters. A zone carrying a community pack can hold hundreds of
+            // markers, and hiding is better than deleting someone else's work.
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.marker_find)
+                    .desired_width(130.0).hint_text("find\u{2026}"));
+                if ui.small_button("\u{2715}").on_hover_text("clear filters").clicked() {
+                    self.marker_find.clear();
+                    self.hidden_kinds.clear();
+                    self.show_mine = true;
+                    self.show_imported = true;
+                }
+            });
+            ui.horizontal_wrapped(|ui| {
+                for ki in markers::KINDS {
+                    let mut on = !self.hidden_kinds.contains(ki.key);
+                    if ui.add(egui::Checkbox::new(&mut on,
+                        egui::RichText::new(ki.label).color(ki.color).size(11.0))).changed()
+                    {
+                        if on { self.hidden_kinds.remove(ki.key); }
+                        else { self.hidden_kinds.insert(ki.key.to_string()); }
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.show_mine, egui::RichText::new("mine").size(11.0));
+                ui.checkbox(&mut self.show_imported,
+                    egui::RichText::new("imported").size(11.0));
+            });
             let mut open_id = None;
             let mut del_id = None;
             egui::ScrollArea::vertical().id_salt("marks").show(ui, |ui| {
                 let mut rows: Vec<_> = self.mset.items.iter()
-                    .map(|m| (m.id.clone(), m.kind.clone(), m.label.clone(), m.x, m.z))
+                    .filter(|m| self.visible(m))
+                    .map(|m| (m.id.clone(), m.kind.clone(), m.label.clone(), m.x, m.z,
+                              m.src.clone()))
                     .collect();
                 rows.sort_by(|a, b| (a.1.clone(), a.2.clone()).cmp(&(b.1.clone(), b.2.clone())));
-                for (id, k, label, x, z) in rows {
-                    let txt = format!("{:<13}{}  ({:.0}, {:.0})",
+                for (id, k, label, x, z, src) in rows {
+                    let txt = format!("{:<13}{}{}  ({:.0}, {:.0})",
                         kind(&k).label,
-                        if label.is_empty() { "\u{2014}" } else { &label }, x, z);
+                        if label.is_empty() { "\u{2014}" } else { &label },
+                        if src.is_empty() { "" } else { " \u{2022}" }, x, z);
                     let r = ui.add(egui::Label::new(
                         egui::RichText::new(txt).color(kind(&k).color).size(11.0),
                     ).sense(egui::Sense::click()));
+                    let r = if src.is_empty() { r } else {
+                        r.on_hover_text(format!("imported from {src}"))
+                    };
                     if r.clicked() { open_id = Some(id.clone()) }
                     r.context_menu(|ui| {
                         if ui.button("Delete marker").clicked() {
@@ -979,8 +1205,15 @@ impl App {
                     });
                 }
             });
-            if let Some(id) = del_id { self.mset.remove(&id) }
-            if let Some(id) = open_id { self.begin_edit(&id, false) }
+            if let Some(id) = del_id { self.mset.checkpoint(); self.mset.remove(&id) }
+            if let Some(id) = open_id {
+                // Centre on it too: finding a marker in the list and then
+                // hunting for it on the map was the obvious missing half.
+                if let Some(m) = self.mset.items.iter().find(|m| m.id == id) {
+                    self.pending_center = Some((m.x, m.z));
+                }
+                self.begin_edit(&id, false);
+            }
 
             if !self.status.is_empty() {
                 ui.add_space(4.0);
@@ -1105,10 +1338,18 @@ impl App {
                     return;
                 }
                 if !self.fitted { self.fit(vp) }
+                if let Some((wx, wz)) = self.pending_center.take() {
+                    self.center_on(wx, wz, vp);
+                }
 
                 // ---- input -------------------------------------------------
                 // Dragging a marker moves it; dragging anywhere else pans.
                 if resp.drag_started_by(egui::PointerButton::Primary) {
+                    // Snapshot before the drag, not after: the position to
+                    // restore is the one it had when the drag began.
+                    let grabbing = resp.interact_pointer_pos()
+                        .and_then(|p| self.marker_at(p)).is_some();
+                    if grabbing { self.mset.checkpoint() }
                     self.dragging = resp.interact_pointer_pos()
                         .and_then(|p| self.marker_at(p))
                         .map(|i| self.mset.items[i].id.clone());
@@ -1219,6 +1460,7 @@ impl App {
                     || self.mset.items.len() <= 6;
                 self.cursor_world = pointer.map(|p| self.screen_to_world(p));
                 for (i, m) in self.mset.items.iter().enumerate() {
+                    if !self.visible(m) { continue }
                     let c = self.world_to_screen(m.x, m.z);
                     if !vp.expand(24.0).contains(c) { continue }
                     let ki = kind(&m.kind);
@@ -1321,7 +1563,16 @@ impl App {
                 }
                 if resp.clicked_by(egui::PointerButton::Secondary) {
                     if let Some(p) = resp.interact_pointer_pos() {
-                        if let Some(i) = hovered {
+                        // Shift: copy the spot rather than mark it. "Meet me
+                        // here" usually wants a message, not a map pin.
+                        if ctx.input(|i| i.modifiers.shift) {
+                            let (wx, wz) = self.screen_to_world(p);
+                            let zone = self.pyr().map(|m| self.graph.pretty(&m.name))
+                                .unwrap_or_default();
+                            let txt = format!("{zone} ({wx:.0}, {wz:.0})");
+                            ctx.output_mut(|o| o.copied_text = txt.clone());
+                            self.status = format!("copied \"{txt}\"");
+                        } else if let Some(i) = hovered {
                             let id = self.mset.items[i].id.clone();
                             self.begin_edit(&id, false);
                         } else {
@@ -1537,6 +1788,7 @@ impl App {
             }
         }
         if save {
+            self.mset.checkpoint();
             if let Some(m) = self.mset.get_mut(&id) {
                 m.label = label; m.kind = KINDS[kindi].key.into(); m.note = note;
                 m.link = link; m.reqs = reqs;
@@ -1544,6 +1796,7 @@ impl App {
             let _ = self.mset.save();
             self.editing = None;
         } else if delete {
+            self.mset.checkpoint();
             self.mset.remove(&id);
             self.editing = None;
         } else if cancel || !open {
@@ -1745,6 +1998,7 @@ fn main() -> eframe::Result<()> {
                     note: "generated by --debug-markers; remove with --clean-markers".into(),
                     link: String::new(),
                     reqs: Default::default(),
+                    src: "debug".into(),
                     added: stamp.clone(),
                 });
                 total += 1;
@@ -1829,7 +2083,10 @@ fn main() -> eframe::Result<()> {
         for (slug, items) in &pack.zones {
             let path = base.join("markers").join(format!("{slug}.json"));
             let mut set = MarkerSet::load(&path);
-            let r = share::merge(&mut set.items, items, &stamp);
+            let label = if pack.name.is_empty() {
+                src.file_stem().unwrap_or_default().to_string_lossy().to_string()
+            } else { pack.name.clone() };
+            let r = share::merge_from(&mut set.items, items, &stamp, &label);
             if r.added > 0 { let _ = set.save(); }
             println!("  {:<22} +{:<4} {} already present", slug, r.added, r.duplicates);
             added += r.added; dup += r.duplicates;
