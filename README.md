@@ -28,7 +28,9 @@ writes everything it needs into your user data directory on first run.
 
 On first launch you get a **No maps yet** panel. It looks for your game install,
 and if it cannot find one you can point at it. Press **Generate maps** and it
-builds every zone from the game's own files.
+builds every zone from the game's own files. If the game is running, the zone
+you are standing in is built first and opens as soon as it is ready -- usually
+within a minute -- while the rest carry on in the sidebar.
 
 ## Generating maps
 
@@ -95,11 +97,13 @@ bundle's size and timestamp, so it is only re-read when something changed.
 | `PgUp` / `PgDn` | step through floors, in zones that have them |
 | `Ctrl+Z` | undo the last marker edit |
 | shift + right-click | copy a location to paste in chat |
-| right-click the map | add a marker |
+| right-click the map | a ring of marker kinds: click one to drop it there, or the middle for the full dialog |
 | left-click a marker | open its note, or follow its link |
 | right-click a marker | edit or delete |
 | drag a marker | move it |
 | `Esc` | close the dialog |
+| `O` | overlay mode |
+| `?` / `F1` | every shortcut, in the app |
 
 Each zone remembers its own rotation. The compass in the top right turns with
 the map, so north is always readable.
@@ -125,6 +129,29 @@ memory, or touch its network traffic.
 ticked green once you have placed a marker for one. The wiki gives topology,
 not positions, so most of these are yours to place as you find them.
 
+### Overlay
+
+**Overlay** in the sidebar (or `O`) puts the map on top of the game: no window
+frame, no sidebar, see-through. Drag the strip along the top to move it and
+the corner to resize it.
+
+An overlay has two states, swapped by a hotkey that works while the game has
+focus -- **Ctrl+Shift+M** unless you pick another in the strip:
+
+- **using the map** -- it takes the mouse, at the **map** opacity;
+- **playing** -- clicks go through to the game, and the map shows at the
+  **playing** opacity. All the way left hides it entirely.
+
+**Play** in the strip does the same as the hotkey; **Exit overlay** (or `O`)
+puts the window back to normal. The game should be in windowed or borderless
+mode: nothing can draw over exclusive fullscreen.
+
+On Windows that is all there is to it. On Linux the hotkey goes through X11,
+which covers a game run through Proton. Under a Wayland desktop the app cannot
+keep itself on top; give its window an "always on top" rule in your compositor
+(KDE: right-click the title bar, More Actions, Keep Above Others, before turning
+the overlay on).
+
 ### Marker kinds
 
 | | icon | meaning |
@@ -147,6 +174,25 @@ colour reinforces it.
 Markers are plain JSON in `markers/<zone>.json`, in world coordinates — diff
 them, share them, or hand-edit them.
 
+### Updates
+
+On launch the app asks GitHub whether a newer release is out. If one is, a
+banner across the top offers **Update now**, **What's new** and **Skip this
+version**. Update now downloads the new version, checks it, and replaces the
+program in place; it takes effect when you press **Restart now** or next start
+it. Nothing installs without being asked.
+
+That one request to GitHub, and fetching any pack you subscribe to, is all
+the network traffic the app makes; neither sends anything about you or your
+maps. Untick **Check for updates on launch** in
+the sidebar to stop it; **Now** beside it checks on demand.
+
+Every release is signed by the maintainer, offline, with a key that is not on
+GitHub. The app checks that signature before installing, so a release slipped
+in by anyone else, even through a hijacked GitHub account, is refused and only
+ever offered as a link. If the program sits somewhere it cannot write to, the
+banner says so and links the release page instead.
+
 ### Requirements
 
 Any marker, but mostly quests, can record **who can actually use it**: a minimum
@@ -167,6 +213,9 @@ list has a **find** box over labels, notes and requirements, a checkbox per kind
 and **mine / imported** toggles -- so you can hide someone else's clutter
 without deleting their work. Clicking a marker in the list centres the map on
 it. The zone dropdown filters as you type.
+
+The find box also searches every other zone: matches elsewhere are listed
+above the zone's own, and clicking one opens that zone on the marker.
 
 Every marker remembers where it came from: blank for ones you placed, otherwise
 the pack it arrived in, shown as a dot in the list and on hover.
@@ -189,6 +238,18 @@ skips anything you already have within 12 world units of the same kind, so
 re-importing an updated pack adds only what is new rather than duplicating a
 camp everyone already marked. Importing shows what it would add, per zone,
 before writing anything.
+
+### Subscribing to packs
+
+Someone who keeps a pack up to date can publish it at a link -- a gist, or a
+file in a GitHub repo. Paste the link under **Subscriptions** in **Share…**
+and the app fetches it, then fetches it again every time it starts, adding
+only markers you do not have yet. GitHub page links work as copied from the
+address bar; they are turned into the raw file.
+
+Markers from a subscription are tagged with its name, so the **imported**
+toggle hides them. Unsubscribing can keep them or remove every one. Markers
+the pack's author later deletes are not removed from your map.
 
 ### Linking markers
 
@@ -241,6 +302,8 @@ The examples below use the Linux form. Drop the `./` and add `.exe` for Windows.
 | `--export <file>` | write all markers as a pack others can import |
 | `--export <file> --zone <slug>` | just one zone |
 | `--import <file>` | merge a pack in, skipping markers you already have |
+| `--check-update` | say whether a newer release is out |
+| `--update` | install it, after the same signature checks the app makes |
 
 Two environment variables:
 
@@ -301,6 +364,11 @@ Only useful if you are working on the renderer:
 | `--extract <bundle> <scene>` | report the geometry a scene yields |
 | `--render <bundle> <scene> <ppu> <out.png>` | render one zone at one resolution |
 
+A debug build (`cargo run`) also takes `MNM_SHOT=out.png`: it opens, sets up the
+states listed in `MNM_SHOT_STATE` (comma-separated: `help`, `ring`, `overlay`,
+`playing`, `share`, `find=<text>`), saves a screenshot of its own window and
+exits. For checking the UI without sitting at it.
+
 ## Where maps come from
 
 Maps are rendered from the game's own Addressables bundles: the geometry is the
@@ -354,8 +422,25 @@ Linux build needs the usual graphics headers
    git tag -a v0.0.1 -m "v0.0.1" && git push origin v0.0.1
    ```
 
-3. CI builds both platforms, checksums them, and opens a **draft** release.
-4. Download the artifacts, check they run, then publish the draft.
+3. CI builds both platforms, checksums them, attests that it built them,
+   and opens a **draft** release. It holds no signing key.
+4. Sign and publish from your own machine:
+
+   ```bash
+   scripts/sign-release.sh v0.0.1
+   ```
+
+   It downloads the draft into `dist/<tag>/`, checks the files against
+   `SHA256SUMS.txt` and against GitHub's attestation that `release.yml` built
+   them at that tag, then waits while you try them. Type `sign` and it signs
+   `SHA256SUMS.txt` with `~/.minisign/mnm-main.key`, uploads the signature and
+   publishes the release.
+
+A release published any other way has no signature, and installed copies will
+not update to it. The app trusts two public keys, listed in `src/update.rs`:
+the main key, and a spare kept offline. If the main key is ever lost or
+exposed, sign with the spare (`MINISIGN_KEY=<spare key> scripts/sign-release.sh
+...`), then ship a release that drops the old key and adds a new spare.
 
 The tag and `Cargo.toml` must agree or the build fails on purpose: the version
 reaches `--version`, the title bar and the stamp written into every generated

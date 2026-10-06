@@ -147,8 +147,11 @@ impl Pack {
     }
 
     pub fn read(path: &Path) -> Result<Pack> {
-        let t = std::fs::read_to_string(path)?;
-        let p: Pack = serde_json::from_str(&t)?;
+        Self::parse(&std::fs::read_to_string(path)?)
+    }
+
+    pub fn parse(text: &str) -> Result<Pack> {
+        let p: Pack = serde_json::from_str(text)?;
         if p.format != 1 {
             bail!("pack format {} is newer than this version understands", p.format);
         }

@@ -88,6 +88,13 @@ jobs:
     needs: [linux, windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
+    # A job's permissions replace the workflow's, so contents is repeated.
+    # The rest let it attest where the archives came from.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
       # The release text lives in the repo, so each release's notes are an
       # ordinary edit reviewed with the code they describe.
@@ -100,11 +107,20 @@ jobs:
           mkdir -p dist
           find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec mv {} dist/ \;
           cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      # A signed record that these exact archives came from this workflow at
+      # this tag. scripts/sign-release.sh checks it before the maintainer signs,
+      # so a signature never vouches for something CI did not build.
+      - uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           # Published as a draft: the maintainer checks the artifacts actually
-          # run before anyone can download them.
+          # run, then signs and publishes with scripts/sign-release.sh. CI holds
+          # no signing key; see src/update.rs.
           draft: true
           generate_release_notes: true
           body_path: RELEASE_NOTES.md

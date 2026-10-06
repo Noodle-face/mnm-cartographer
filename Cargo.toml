@@ -1,6 +1,6 @@
 [package]
 name = "mnm-cartographer"
-version = "0.0.4"
+version = "0.0.5"
 edition = "2021"
 description = "Zone maps for Monsters & Memories"
 license = "MIT"
@@ -17,6 +17,19 @@ anyhow = "1"
 unity-rs-core = "0.5.2"
 webp = "0.3"
 rayon = "1"
+# Updating itself; see src/update.rs. rustls rather than the system TLS so the
+# binary still links nothing it does not carry.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+sha2 = "0.11"
+minisign-verify = "0.3"
+self-replace = "1.5"
+# Unpacking a release: .zip on Windows, .tar.gz on Linux. Both are built
+# everywhere, so either can be tested anywhere; zip and flate2 are linked in
+# already by other crates.
+zip = { version = "8", default-features = false, features = ["deflate"] }
+flate2 = "1"
+tar = "0.4"
+global-hotkey = "0.8.0"
 
 # Native folder picker, per platform. On Linux the xdg-portal backend keeps GTK
 # out of the link, so the binary still needs no system toolkit; on Windows the

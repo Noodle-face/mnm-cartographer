@@ -1,0 +1,2 @@
+caf90169eefa5f807d577486b9f795ab86ae2983c5c20806cff959117e90af18  mnm-cartographer-v9.9.9-linux-x86_64.tar.gz
+340d600392818df2413382dc7d8325c360d83ea49a262d31760348484bbc10b5  mnm-cartographer-v9.9.9-windows-x64.zip

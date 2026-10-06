@@ -13,6 +13,8 @@ pub enum Stage {
     Survey { done: usize, total: usize, what: String },
     /// Building one zone's pyramid.
     Zone { done: usize, total: usize, name: String, level: usize, levels: usize },
+    /// One zone's map is finished and can be opened, while the rest build.
+    Built(String),
     Finished { zones: usize, tiles: usize, bytes: u64, failed: Vec<String> },
     Failed(String),
 }
@@ -23,6 +25,9 @@ pub struct Job {
     pub started: Instant,
     pub last: Option<Stage>,
     pub done: bool,
+    /// Zones finished since the app last took them, to show at once rather
+    /// than after the whole run.
+    pub built: Vec<String>,
     /// Seconds per completed zone, for the estimate.
     zone_times: Vec<f32>,
     zone_started: Option<Instant>,
@@ -60,7 +65,14 @@ impl Job {
         only: Option<std::collections::HashSet<String>>,
         force: bool,
     ) -> Job {
-        Self::start_with(install, out_dir, only, force, false)
+        Self::start_inner(install, out_dir, only, force, false, None)
+    }
+
+    /// Build whatever is missing, starting with `first` -- the zone the player
+    /// is standing in -- on its own, so a first run has something to show in
+    /// about a minute instead of after every zone.
+    pub fn start_missing_first(install: PathBuf, out_dir: PathBuf, first: Option<String>) -> Job {
+        Self::start_inner(install, out_dir, None, false, false, first)
     }
 
     /// As [`Job::start`]; `floors_only` rebuilds just the chosen floors of
@@ -71,6 +83,17 @@ impl Job {
         only: Option<std::collections::HashSet<String>>,
         force: bool,
         floors_only: bool,
+    ) -> Job {
+        Self::start_inner(install, out_dir, only, force, floors_only, None)
+    }
+
+    fn start_inner(
+        install: PathBuf,
+        out_dir: PathBuf,
+        only: Option<std::collections::HashSet<String>>,
+        force: bool,
+        floors_only: bool,
+        first: Option<String>,
     ) -> Job {
         let floors_off = Settings::load().floors_off;
         let (tx, rx) = channel();
@@ -100,9 +123,7 @@ impl Job {
                 .filter(|l| force || !out_dir.join(format!("{}.mbtiles", zones::slug(&l.zone))).exists())
                 .collect();
             let completed = std::sync::atomic::AtomicUsize::new(total - todo.len());
-            let results: Vec<(usize, u64, Option<String>)> = run_zones(
-                todo, zone_concurrency(), &install, &out_dir, &c,
-                |env, shared, l| {
+            let work = |env: &super::bundle::Env, shared: &super::bundle::Shared, l: &zones::Located| {
                     let seen = completed.load(Ordering::Relaxed);
                     let _ = tx.send(Stage::Zone {
                         done: seen, total, name: l.zone.clone(), level: 0, levels: 4,
@@ -136,15 +157,26 @@ impl Job {
                     );
                     completed.fetch_add(1, Ordering::Relaxed);
                     match res {
-                        Ok((n, b)) => (n, b, None),
+                        Ok((n, b)) => {
+                            let _ = tx.send(Stage::Built(l.zone.clone()));
+                            (n, b, None)
+                        }
                         Err(e) => (0, 0, Some(format!("{}: {e}", l.zone))),
                     }
-                },
-                |l, msg| {
-                    completed.fetch_add(1, Ordering::Relaxed);
-                    (0, 0, Some(format!("{}: {msg}", l.zone)))
-                },
-            );
+            };
+            let open_failed = |l: &zones::Located, msg: &str| {
+                completed.fetch_add(1, Ordering::Relaxed);
+                (0, 0, Some(format!("{}: {msg}", l.zone)))
+            };
+            // The priority zone alone first, with every core to itself; then
+            // the rest as usual.
+            let want = first.as_deref().map(zones::slug);
+            let (head, rest): (Vec<_>, Vec<_>) = todo.into_iter()
+                .partition(|l| want.as_ref().is_some_and(|w| zones::slug(&l.zone) == *w));
+            let mut results: Vec<(usize, u64, Option<String>)> =
+                run_zones(head, 1, &install, &out_dir, &c, &work, &open_failed);
+            results.extend(run_zones(
+                rest, zone_concurrency(), &install, &out_dir, &c, &work, &open_failed));
             if c.load(Ordering::Relaxed) { return }
             let (mut tiles_n, mut bytes_n) = (0usize, 0u64);
             let mut failed: Vec<String> = Vec::new();
@@ -162,6 +194,7 @@ impl Job {
             started: Instant::now(),
             last: None,
             done: false,
+            built: Vec::new(),
             zone_times: Vec::new(),
             zone_started: None,
             last_zone: usize::MAX,
@@ -177,6 +210,10 @@ impl Job {
         let mut changed = false;
         loop {
             match self.rx.try_recv() {
+                Ok(Stage::Built(name)) => {
+                    self.built.push(name);
+                    changed = true;
+                }
                 Ok(s) => {
                     if let Stage::Zone { done, .. } = &s {
                         // Time each zone so the estimate is based on measured
@@ -319,6 +356,24 @@ pub struct Settings {
     /// is most of what a multi-storey zone costs.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub floors_off: std::collections::BTreeMap<String, Vec<usize>>,
+    /// Do not ask GitHub for a newer release on launch. Stored as "off" so a
+    /// fresh settings file checks.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub updates_off: bool,
+    /// A release the user chose to skip; it is not offered again.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub skip_update: String,
+    /// Marker packs followed by URL; see subscribe.rs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subscriptions: Vec<crate::subscribe::Subscription>,
+    /// Overlay opacity while using the map and while playing, and the key
+    /// that swaps the two; unset means the defaults in overlay.rs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay_opacity: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay_passive: Option<f32>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub overlay_hotkey: String,
 }
 
 impl Settings {
@@ -499,4 +554,31 @@ pub fn run_zones<R: Send>(
     let mut r = results.into_inner().unwrap();
     r.sort_by_key(|(i, _)| *i);
     r.into_iter().map(|(_, r)| r).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Needs the game installed, and builds a real zone, so it is not part of
+    /// the normal run: `cargo test -- --ignored first_zone_builds_first`.
+    #[test]
+    #[ignore]
+    fn first_zone_builds_first() {
+        let install = Settings::load().resolve().expect("game install not found");
+        let out = std::env::temp_dir().join(format!("mnm-first-{}", std::process::id()));
+        std::fs::create_dir_all(&out).unwrap();
+        // A small zone from the middle of the list, so it is not first by accident.
+        let mut job = Job::start_missing_first(install, out.clone(), Some("MiniCrypt".into()));
+        let first = loop {
+            job.poll();
+            if let Some(b) = job.built.first() { break b.clone() }
+            assert!(!job.done, "finished without building anything: {:?}", job.last);
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        };
+        job.cancel();
+        while !job.done { job.poll(); std::thread::sleep(std::time::Duration::from_millis(200)) }
+        std::fs::remove_dir_all(&out).ok();
+        assert_eq!(zones::slug(&first), zones::slug("MiniCrypt"));
+    }
 }

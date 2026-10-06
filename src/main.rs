@@ -5,6 +5,7 @@
 mod connections;
 mod gen;
 mod share;
+mod subscribe;
 
 /// Single source of truth: the version in Cargo.toml. Nothing else declares it,
 /// so the title bar, --version and the stamp written into generated maps can
@@ -37,7 +38,9 @@ fn seed_assets(dir: &std::path::Path) {
 mod paper;
 mod icons;
 mod markers;
+mod overlay;
 mod pyramid;
+mod update;
 mod watch;
 
 use markers::{kind, MarkerSet, KINDS};
@@ -218,6 +221,31 @@ struct App {
     cursor_world: Option<(f64, f64)>,
     title_shown: String,
     confirm_clear: bool,
+    /// Checking for and installing new releases; see update.rs.
+    updater: update::Updater,
+    /// The launch check has been started.
+    update_checked: bool,
+    /// The banner was closed for this session.
+    update_hidden: bool,
+    /// The keyboard and mouse reference, opened with ? or F1.
+    help_open: bool,
+    /// The ring of marker kinds a right-click opens, at this world position.
+    /// Placing a marker mid-fight should be two clicks, not a form.
+    radial: Option<(f64, f64)>,
+    /// Markers in OTHER zones matching the find box, and the query they were
+    /// found for. Recomputed only when the query changes: it reads every
+    /// zone's file.
+    elsewhere: (String, Vec<(usize, markers::Marker)>),
+    /// Subscribed packs being fetched, and the URL box in the Share window.
+    refresh: Option<subscribe::Refresh>,
+    sub_url: String,
+    /// Overlay mode, and within it whether the player is playing (clicks go
+    /// through to the game) rather than using the map. See overlay.rs.
+    overlay: bool,
+    playing: bool,
+    hotkey: Option<overlay::Hotkey>,
+    /// Frames drawn, for `dev_shot`.
+    frames: u32,
 }
 
 impl App {
@@ -287,27 +315,75 @@ impl App {
             zone_list: Vec::new(),
             zone_picked: Default::default(),
             zone_filter: String::new(),
+            updater: update::Updater::new(),
+            update_checked: false,
+            update_hidden: false,
+            help_open: false,
+            radial: None,
+            elsewhere: (String::new(), Vec::new()),
+            refresh: None,
+            sub_url: String::new(),
+            overlay: false,
+            playing: false,
+            hotkey: None,
+            frames: 0,
         }
     }
 
-    /// Reload the map list after a generation run, without restarting.
-    fn rescan(&mut self) {
-        let extra = gen::job::maps_dir();
-        // Generated maps land in the data directory; prefer whatever base
-        // already had maps, but fall back to the generated location.
-        let _ = &extra;
+    /// Reload the map list while or after maps are generated, without
+    /// restarting. `built` names zones whose maps were just (re)written.
+    ///
+    /// The zone on screen stays on screen, found again by name since new maps
+    /// shift the list; its view is kept unless its own map was rebuilt. With
+    /// nothing on screen yet -- a first run -- the first zone built opens.
+    fn rescan(&mut self, built: &[String]) {
+        let slug_of = |p: &Pyramid| p.path.file_stem().unwrap_or_default().to_string_lossy().to_lowercase();
+        let rebuilt = |p: &Pyramid| built.iter().any(|b| gen::zones::slug(b) == slug_of(p));
+        let was = self.pyr().map(|p| p.name.clone());
         self.maps = discover_all();
-        self.textures.clear();
-        self.fitted = false;
-        self.cur = self.cur.min(self.maps.len().saturating_sub(1));
-        if let Some(p) = self.maps.get(self.cur) {
-            self.mset = MarkerSet::load(&p.markers_path(&self.base));
+        let here = was.as_ref().and_then(|n| self.maps.iter().position(|m| &m.name == n));
+        if let Some(i) = here {
+            self.cur = i;
+            if !rebuilt(&self.maps[i]) { return }
         }
-        self.floors = self.maps.get(self.cur)
-            .map(|p| pyramid::floors_of(&p.path)).unwrap_or_default();
-        self.floor = None;
-        self.painted = self.maps.get(self.cur).and_then(|p| pyramid::painted_of(&p.path));
-        self.show_painted = false;
+        let i = here
+            .or_else(|| self.maps.iter().position(|m| rebuilt(m)))
+            .unwrap_or(0);
+        if i < self.maps.len() {
+            // Not the current index, so open_zone reloads everything.
+            self.cur = usize::MAX;
+            self.fitted = false;
+            self.open_zone(i);
+        } else {
+            self.cur = 0;
+        }
+    }
+
+    /// Take finished maps from a running generation, and its result once it
+    /// ends. Every frame, not only while a progress panel is open: a first run
+    /// swaps that panel for the map as soon as one zone is ready.
+    fn poll_gen(&mut self, ctx: &egui::Context) {
+        let Some(job) = &mut self.gen_job else { return };
+        job.poll();
+        let built = std::mem::take(&mut job.built);
+        let done = job.done;
+        let summary = match &job.last {
+            Some(gen::job::Stage::Finished { zones, failed, .. }) if failed.is_empty() =>
+                format!("maps done: {zones} zones"),
+            Some(gen::job::Stage::Finished { zones, failed, .. }) =>
+                format!("maps done: {zones} zones, {} failed (see Maps\u{2026})", failed.len()),
+            Some(gen::job::Stage::Failed(e)) => format!("generation failed: {e}"),
+            _ => String::new(),
+        };
+        if !built.is_empty() { self.rescan(&built) }
+        if done {
+            self.gen_job = None;
+            self.rescan(&[]);
+            self.refresh_zone_list();
+            if !summary.is_empty() { self.status = summary }
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
     }
 
     /// Re-read which zones exist and which are already built.
@@ -324,14 +400,15 @@ impl App {
         if !self.share_open {
             return;
         }
-        let dim = egui::Color32::from_rgb(0x6a, 0x5f, 0x50);
+        // The window is on egui's dark theme, not parchment.
+        let dim = egui::Color32::from_gray(150);
         let mut open = self.share_open;
         egui::Window::new("Share markers")
             .open(&mut open)
             .default_width(460.0)
             .collapsible(false)
             .show(ctx, |ui| {
-                ui.label(egui::RichText::new("Paste a marker").strong().color(INK));
+                ui.label(egui::RichText::new("Paste a marker").strong());
                 ui.label(egui::RichText::new(
                     "Someone sends you a line starting mnm1| -- paste it here.")
                     .small().color(dim));
@@ -351,7 +428,7 @@ impl App {
                 });
 
                 ui.separator();
-                ui.label(egui::RichText::new("Packs").strong().color(INK));
+                ui.label(egui::RichText::new("Packs").strong());
                 ui.label(egui::RichText::new(
                     "A pack is a file of many markers. Importing skips anything \
                      you already have within 12 units.").small().color(dim));
@@ -386,16 +463,73 @@ impl App {
                         }
                     }
                 });
+
+                ui.separator();
+                ui.label(egui::RichText::new("Subscriptions").strong());
+                ui.label(egui::RichText::new(
+                    "Follow a pack someone publishes by its link. It is checked again \
+                     every time the app starts, adding only markers you do not have.")
+                    .small().color(dim));
+                let busy = self.refresh.is_some();
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.sub_url)
+                        .desired_width(300.0).hint_text("https://\u{2026}/pack.json"));
+                    let url = subscribe::normalise(&self.sub_url);
+                    let dup = self.settings.subscriptions.iter().any(|s| s.url == url);
+                    let b = ui.add_enabled(!busy && !url.is_empty() && !dup, egui::Button::new("Subscribe"));
+                    let b = if dup { b.on_disabled_hover_text("already subscribed") } else { b };
+                    if b.clicked() {
+                        self.share_note = "Fetching\u{2026}".into();
+                        self.refresh = Some(subscribe::Refresh::start(vec![url], ui.ctx()));
+                    }
+                });
+                let mut drop: Option<(usize, bool)> = None;
+                for (i, sub) in self.settings.subscriptions.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(&sub.name));
+                        ui.label(egui::RichText::new(&sub.last).small().color(dim));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.menu_button("\u{2026}", |ui| {
+                                ui.label(egui::RichText::new(&sub.url).small());
+                                if ui.button("Unsubscribe, keep its markers").clicked() {
+                                    drop = Some((i, false)); ui.close_menu();
+                                }
+                                if ui.button("Unsubscribe and remove its markers").clicked() {
+                                    drop = Some((i, true)); ui.close_menu();
+                                }
+                            });
+                        });
+                    });
+                }
+                if !self.settings.subscriptions.is_empty() {
+                    if ui.add_enabled(!busy, egui::Button::new(if busy { "Checking\u{2026}" } else { "Check all now" }))
+                        .clicked()
+                    {
+                        let urls = self.settings.subscriptions.iter().map(|s| s.url.clone()).collect();
+                        self.refresh = Some(subscribe::Refresh::start(urls, ui.ctx()));
+                    }
+                }
+                if let Some((i, purge)) = drop {
+                    let sub = self.settings.subscriptions.remove(i);
+                    self.settings.save();
+                    self.share_note = if purge {
+                        let n = self.remove_from_source(&sub.name);
+                        format!("Unsubscribed from {}; removed its {n} marker(s).", sub.name)
+                    } else {
+                        format!("Unsubscribed from {}; its markers stay.", sub.name)
+                    };
+                }
+
                 if !self.share_note.is_empty() {
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new(&self.share_note).color(INK));
+                    ui.label(egui::RichText::new(&self.share_note));
                 }
                 let mut apply = false;
                 let mut cancel = false;
                 if let Some(p) = &self.pending_import {
                     ui.separator();
                     ui.label(egui::RichText::new(format!("Pack: {}", p.label))
-                        .strong().color(INK));
+                        .strong());
                     if !p.pack.author.is_empty() {
                         ui.label(egui::RichText::new(format!("by {}", p.pack.author))
                             .small().color(dim));
@@ -538,19 +672,96 @@ impl App {
     /// Actually write the previewed pack.
     fn apply_import(&mut self) -> String {
         let Some(p) = self.pending_import.take() else { return String::new() };
+        let (added, dup) = self.merge_pack(&p.pack, &p.label);
+        format!("Imported {added} marker(s); {dup} were already on your map.")
+    }
+
+    /// Merge a pack into every zone's markers, tagging new ones with `label`.
+    /// Returns (added, already there).
+    fn merge_pack(&mut self, pack: &share::Pack, label: &str) -> (usize, usize) {
         let stamp = markers::now_stamp();
         let (mut added, mut dup) = (0usize, 0usize);
-        for (slug, items) in &p.pack.zones {
+        for (slug, items) in &pack.zones {
             let path = self.base.join("markers").join(format!("{slug}.json"));
             let mut set = MarkerSet::load(&path);
-            let r = share::merge_from(&mut set.items, items, &stamp, &p.label);
+            let r = share::merge_from(&mut set.items, items, &stamp, label);
             if r.added > 0 { let _ = set.save(); }
             added += r.added; dup += r.duplicates;
         }
+        self.reload_markers();
+        (added, dup)
+    }
+
+    /// Re-read the open zone's markers after something else wrote them.
+    fn reload_markers(&mut self) {
         if let Some(m) = self.maps.get(self.cur) {
             self.mset = MarkerSet::load(&m.markers_path(&self.base));
         }
-        format!("Imported {added} marker(s); {dup} were already on your map.")
+        self.elsewhere.0.clear();
+    }
+
+    /// Remove every marker that came from `src`, in every zone.
+    fn remove_from_source(&mut self, src: &str) -> usize {
+        let mut n = 0;
+        for e in std::fs::read_dir(self.base.join("markers")).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("json") { continue }
+            let mut set = MarkerSet::load(&p);
+            let before = set.items.len();
+            set.items.retain(|m| m.src != src);
+            if set.items.len() != before {
+                n += before - set.items.len();
+                let _ = set.save();
+            }
+        }
+        self.reload_markers();
+        n
+    }
+
+    /// Merge subscribed packs as their fetches come back. A URL not yet in
+    /// the list is a new subscription, added only once it proves to be a pack.
+    fn poll_subscriptions(&mut self) {
+        let Some(r) = &mut self.refresh else { return };
+        let got = r.take();
+        if r.left == 0 { self.refresh = None }
+        for (url, res) in got {
+            let known = self.settings.subscriptions.iter().position(|s| s.url == url);
+            match (res, known) {
+                (Ok(pack), Some(i)) => {
+                    let name = self.settings.subscriptions[i].name.clone();
+                    let (added, _) = self.merge_pack(&pack, &name);
+                    self.settings.subscriptions[i].last = format!(
+                        "{} \u{2014} {added} new", markers::now_stamp());
+                    if added > 0 { self.status = format!("{added} new marker(s) from {name}") }
+                }
+                (Ok(pack), None) => {
+                    let mut name = if pack.name.trim().is_empty() {
+                        subscribe::fallback_name(&url)
+                    } else {
+                        pack.name.trim().to_string()
+                    };
+                    // Names tag markers, so two packs must not share one.
+                    let base = name.clone();
+                    let mut k = 2;
+                    while self.settings.subscriptions.iter().any(|s| s.name == name) {
+                        name = format!("{base} ({k})");
+                        k += 1;
+                    }
+                    let (added, dup) = self.merge_pack(&pack, &name);
+                    self.share_note = format!(
+                        "Subscribed to {name}: {added} marker(s) added, {dup} already there.");
+                    self.settings.subscriptions.push(subscribe::Subscription {
+                        url, name, last: format!("{} \u{2014} {added} new", markers::now_stamp()),
+                    });
+                    self.sub_url.clear();
+                }
+                (Err(e), Some(i)) => {
+                    self.settings.subscriptions[i].last = format!("could not fetch: {e}");
+                }
+                (Err(e), None) => self.share_note = format!("Could not subscribe: {e}"),
+            }
+            self.settings.save();
+        }
     }
 
     /// The maps window: pick zones and (re)build them. Reachable whether or
@@ -735,7 +946,8 @@ impl App {
                         if let Some(install) = found.clone() {
                             let out = gen::job::maps_dir();
                             std::fs::create_dir_all(&out).ok();
-                            self.gen_job = Some(gen::job::Job::start(install, out, None, false));
+                            self.gen_job = Some(gen::job::Job::start_missing_first(
+                                install, out, self.watcher.zone.clone()));
                         }
                     }
                 });
@@ -748,9 +960,7 @@ impl App {
     /// maps window so they cannot drift apart.
     fn progress_ui(&mut self, ui: &mut egui::Ui) {
         let dim = egui::Color32::from_rgb(0x6a, 0x5f, 0x50);
-        let mut finished = false;
-        if let Some(job) = &mut self.gen_job {
-            job.poll();
+        if let Some(job) = &self.gen_job {
             let (frac, eta) = job.progress();
             ui.add_space(10.0);
             ui.add(egui::ProgressBar::new(frac)
@@ -775,13 +985,13 @@ impl App {
                     for f in failed.iter().take(4) {
                         ui.label(egui::RichText::new(f).small().color(dim));
                     }
-                    finished = true;
                 }
                 Some(gen::job::Stage::Failed(e)) => {
                     ui.colored_label(egui::Color32::from_rgb(0xa0, 0x1b, 0x22), e);
-                    finished = true;
                 }
-                None => { ui.label(egui::RichText::new("Starting...").color(INK)); }
+                Some(gen::job::Stage::Built(_)) | None => {
+                    ui.label(egui::RichText::new("Starting...").color(INK));
+                }
             }
             let elapsed = job.started.elapsed().as_secs_f32();
             let fmt = |s: f32| {
@@ -795,12 +1005,6 @@ impl App {
             if !job.done && ui.button("Cancel").clicked() {
                 job.cancel();
             }
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
-        }
-        if finished {
-            self.gen_job = None;
-            self.rescan();
-            self.refresh_zone_list();
         }
     }
 
@@ -862,11 +1066,18 @@ impl App {
                         let out = gen::job::maps_dir();
                         std::fs::create_dir_all(&out).ok();
                         self.gen_note.clear();
-                        self.gen_job = Some(gen::job::Job::start(install, out, None, false));
+                        self.gen_job = Some(gen::job::Job::start_missing_first(
+                            install, out, self.watcher.zone.clone()));
                     }
                 }
             });
 
+            if let Some(z) = &self.watcher.zone {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(format!(
+                    "{z} is built first, since the game says you are there. It opens \
+                     as soon as it is ready; the rest carry on behind it.")).small().color(dim));
+            }
             if !self.gen_note.is_empty() {
                 ui.add_space(8.0);
                 ui.colored_label(egui::Color32::from_rgb(0xa0, 0x1b, 0x22), &self.gen_note);
@@ -960,6 +1171,8 @@ impl App {
             .map_or(0.0, |d| d.to_radians());
         let p = &self.maps[self.cur];
         self.mset = MarkerSet::load(&p.markers_path(&self.base));
+        self.radial = None;
+        self.elsewhere.0.clear();
     }
 
     /// Turn a scene-space vector by the view rotation.
@@ -1089,7 +1302,14 @@ fn wrap_angle(a: f32) -> f32 {
 
 
 impl eframe::App for App {
+    /// See-through behind the panels. Normally they cover the window and
+    /// this never shows; an overlay paints the map translucent over it.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0; 4]
+    }
+
     fn update(&mut self, ctx: &egui::Context, _f: &mut eframe::Frame) {
+        if cfg!(debug_assertions) { self.dev_shot(ctx) }
         // Generation can run for minutes; put its progress in the title so a
         // minimised or background window still says how far along it is.
         let want_title = match self.gen_job.as_ref().filter(|j| !j.done) {
@@ -1109,22 +1329,27 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(want_title));
         }
 
+        if self.overlay && self.hotkey.as_ref().is_some_and(|h| h.pressed()) {
+            self.set_playing(ctx, !self.playing);
+        }
+        if self.overlay && self.playing {
+            // Playing: the map alone, if it shows at all, and nothing that
+            // takes input. The game's zone is still followed.
+            self.follow_game(ctx);
+            self.poll_gen(ctx);
+            if self.map_alpha() > 0.0 {
+                self.map(ctx);
+            } else {
+                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |_| {});
+            }
+            return;
+        }
+
         // Drawn first so it floats above the map and the side panel.
         self.maps_window(ctx);
         self.share_window(ctx);
-        // ---- follow the game between zones -------------------------------
-        let t = ctx.input(|i| i.time);
-        if self.follow && t - self.last_poll > 2.0 {
-            self.last_poll = t;
-            if let Some(z) = self.watcher.poll() {
-                self.status = format!("game entered: {z}");
-                let names: Vec<String> = self.maps.iter().map(|m| m.name.clone()).collect();
-                if let Some(i) = watch::match_zone(&z, &names) {
-                    self.open_zone(i);
-                }
-            }
-            ctx.request_repaint_after(std::time::Duration::from_secs(2));
-        }
+        self.help_window(ctx);
+        self.follow_game(ctx);
 
         // Window title follows the zone, so a taskbar entry is identifiable.
         if let Some(p) = self.pyr() {
@@ -1137,7 +1362,11 @@ impl eframe::App for App {
 
         let mut undo = false;
         ctx.input(|i| {
-            if i.key_pressed(egui::Key::Escape) { self.editing = None }
+            if i.key_pressed(egui::Key::Escape) {
+                self.editing = None;
+                self.help_open = false;
+                self.radial = None;
+            }
             if i.key_pressed(egui::Key::F) || i.key_pressed(egui::Key::Home) {
                 self.fitted = false;
             }
@@ -1147,13 +1376,39 @@ impl eframe::App for App {
                 undo = true;
             }
         });
+        // Not while typing: a note can hold a question mark.
+        if !ctx.wants_keyboard_input()
+            && ctx.input(|i| i.key_pressed(egui::Key::Questionmark) || i.key_pressed(egui::Key::F1))
+        {
+            self.help_open = !self.help_open;
+        }
         if undo && self.editing.is_none() && self.mset.undo() {
             self.status = "undid the last marker edit".into();
         }
 
+        if !ctx.wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::O)) {
+            self.set_overlay(ctx, !self.overlay);
+        }
         self.poll_paint(ctx);
-        self.sidebar(ctx);
+        self.poll_gen(ctx);
+        if !self.update_checked {
+            self.update_checked = true;
+            if !self.settings.updates_off { self.updater.check(ctx, true) }
+            if !self.settings.subscriptions.is_empty() {
+                let urls = self.settings.subscriptions.iter().map(|s| s.url.clone()).collect();
+                self.refresh = Some(subscribe::Refresh::start(urls, ctx));
+            }
+        }
+        self.poll_subscriptions();
+        if self.overlay {
+            self.overlay_bar(ctx);
+        } else {
+            // Before the side panel, so the banner spans the whole window.
+            self.update_banner(ctx);
+            self.sidebar(ctx);
+        }
         self.map(ctx);
+        if self.overlay { self.resize_grip(ctx) }
         self.marker_window(ctx);
 
         if self.confirm_clear {
@@ -1178,7 +1433,296 @@ impl eframe::App for App {
     }
 }
 
+/// Every key and mouse action, for the help window. Kept beside the code
+/// rather than only in the README so the app cannot forget one it gains.
+const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
+    ("Map", &[
+        ("drag", "pan"),
+        ("wheel", "zoom"),
+        ("F / Home", "fit the whole map"),
+        ("Q / E", "turn the map 15\u{b0} left / right"),
+        ("middle-drag", "turn the map freely"),
+        ("N, or click the compass", "north up"),
+        ("PgUp / PgDn", "step through floors"),
+        ("shift + right-click", "copy a location to paste in chat"),
+    ]),
+    ("Markers", &[
+        ("right-click the map", "pick a marker kind to drop there"),
+        ("left-click a marker", "open its note, or follow its link"),
+        ("right-click a marker", "edit or delete"),
+        ("drag a marker", "move it"),
+        ("Ctrl+Z", "undo the last marker edit"),
+    ]),
+    ("Window", &[
+        ("? / F1", "this list"),
+        ("Esc", "close a dialog"),
+        ("O", "overlay: the map on top of the game, borderless"),
+        ("Ctrl+Shift+M", "in an overlay, from the game: switch between playing and using the map (changeable)"),
+    ]),
+];
+
 impl App {
+    /// Debug builds only: `MNM_SHOT=out.png` puts the app in the states
+    /// listed in `MNM_SHOT_STATE` (comma-separated: help, ring, overlay,
+    /// playing, find=<text>, share), saves a screenshot of its own window and
+    /// exits. For checking the UI without a person at the screen.
+    fn dev_shot(&mut self, ctx: &egui::Context) {
+        let Ok(out) = std::env::var("MNM_SHOT") else { return };
+        self.frames += 1;
+        if self.frames == 3 {
+            for st in std::env::var("MNM_SHOT_STATE").unwrap_or_default().split(',') {
+                match st.split_once('=').unwrap_or((st, "")) {
+                    ("help", _) => self.help_open = true,
+                    ("share", _) => self.share_open = true,
+                    ("overlay", _) => self.set_overlay(ctx, true),
+                    ("playing", _) => self.set_playing(ctx, true),
+                    ("find", q) => self.marker_find = q.to_string(),
+                    ("ring", _) => if let Some(p) = self.pyr() {
+                        let e = p.extent;
+                        self.radial = Some(((e[0] + e[1]) / 2.0, (e[2] + e[3]) / 2.0));
+                    },
+                    _ => {}
+                }
+            }
+        }
+        if self.frames == 40 { ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot) }
+        let shot = ctx.input(|i| i.raw.events.iter().find_map(|e| match e {
+            egui::Event::Screenshot { image, .. } => Some(image.clone()),
+            _ => None,
+        }));
+        if let Some(img) = shot {
+            let rgba: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
+            image::RgbaImage::from_raw(img.size[0] as u32, img.size[1] as u32, rgba)
+                .expect("screenshot size").save(&out).expect("write screenshot");
+            std::process::exit(0);
+        }
+        ctx.request_repaint();
+    }
+
+    /// Switch zones with the game, every couple of seconds.
+    fn follow_game(&mut self, ctx: &egui::Context) {
+        let t = ctx.input(|i| i.time);
+        if self.follow && t - self.last_poll > 2.0 {
+            self.last_poll = t;
+            if let Some(z) = self.watcher.poll() {
+                self.status = format!("game entered: {z}");
+                let names: Vec<String> = self.maps.iter().map(|m| m.name.clone()).collect();
+                if let Some(i) = watch::match_zone(&z, &names) {
+                    self.open_zone(i);
+                }
+            }
+            ctx.request_repaint_after(std::time::Duration::from_secs(2));
+        }
+    }
+
+    /// How opaque the map is drawn: fully, unless this is an overlay.
+    fn map_alpha(&self) -> f32 {
+        match (self.overlay, self.playing) {
+            (false, _) => 1.0,
+            (true, false) => self.settings.overlay_opacity.unwrap_or(overlay::DEFAULT_OPACITY),
+            (true, true) => self.settings.overlay_passive.unwrap_or(overlay::DEFAULT_PASSIVE),
+        }
+    }
+
+    fn hotkey_name(&self) -> String {
+        if self.settings.overlay_hotkey.is_empty() { overlay::DEFAULT_HOTKEY.to_string() }
+        else { self.settings.overlay_hotkey.clone() }
+    }
+
+    fn set_overlay(&mut self, ctx: &egui::Context, on: bool) {
+        self.overlay = on;
+        self.radial = None;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(!on));
+        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+            if on { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal }));
+        let name = self.hotkey_name();
+        let hk = self.hotkey.get_or_insert_with(|| overlay::Hotkey::new(ctx));
+        hk.set(on.then_some(name.as_str()));
+        self.set_playing(ctx, false);
+    }
+
+    fn set_playing(&mut self, ctx: &egui::Context, playing: bool) {
+        self.playing = playing;
+        ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(playing));
+    }
+
+    /// The overlay's strip: drag it to move the window, and the controls
+    /// that replace the sidebar.
+    fn overlay_bar(&mut self, ctx: &egui::Context) {
+        let fill = egui::Color32::from_rgba_unmultiplied(0x1d, 0x1a, 0x16, 200);
+        egui::TopBottomPanel::top("overlay_bar")
+            .frame(egui::Frame::none().fill(fill).inner_margin(egui::Margin::symmetric(8.0, 4.0)))
+            .show(ctx, |ui| {
+                // Behind the controls, so empty parts of the strip drag the
+                // window: it has no title bar to drag by.
+                let bg = ui.interact(ui.max_rect(), ui.id().with("drag"), egui::Sense::drag());
+                if bg.drag_started() { ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag) }
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("\u{2630}").color(PAPER))
+                        .on_hover_text("drag the bar to move the window");
+                    let zone = self.pyr().map(|p| self.graph.pretty(&p.name)).unwrap_or_default();
+                    ui.label(egui::RichText::new(zone).strong().color(PAPER));
+                    ui.separator();
+                    let mut a = self.map_alpha();
+                    ui.label(egui::RichText::new("map").small().color(PAPER));
+                    if ui.add(egui::Slider::new(&mut a, 0.2..=1.0).show_value(false))
+                        .on_hover_text("opacity").changed()
+                    {
+                        self.settings.overlay_opacity = Some(a);
+                    }
+                    let mut p = self.settings.overlay_passive.unwrap_or(overlay::DEFAULT_PASSIVE);
+                    ui.label(egui::RichText::new("playing").small().color(PAPER));
+                    if ui.add(egui::Slider::new(&mut p, 0.0..=1.0).show_value(false))
+                        .on_hover_text("opacity while playing (clicks go to the game); \
+                                        all the way left hides the map").changed()
+                    {
+                        self.settings.overlay_passive = Some(p);
+                    }
+                    if ui.input(|i| i.pointer.any_released()) { self.settings.save() }
+                    let mut key = self.hotkey_name();
+                    egui::ComboBox::from_id_salt("hotkey").selected_text(&key).width(110.0)
+                        .show_ui(ui, |ui| {
+                            for h in overlay::HOTKEYS {
+                                ui.selectable_value(&mut key, h.to_string(), *h);
+                            }
+                        }).response.on_hover_text("press it in the game to switch between \
+                                                    playing and using the map");
+                    if key != self.hotkey_name() {
+                        self.settings.overlay_hotkey = key.clone();
+                        self.settings.save();
+                        if let Some(h) = &mut self.hotkey { h.set(Some(&key)) }
+                    }
+                    if ui.button("Play").on_hover_text(format!(
+                        "Let clicks through to the game. {key} brings the map back.")).clicked()
+                    {
+                        self.set_playing(ctx, true);
+                    }
+                    if ui.button("Exit overlay").on_hover_text("O").clicked() {
+                        self.set_overlay(ctx, false);
+                    }
+                });
+                if let Some(e) = self.hotkey.as_ref().map(|h| h.error.clone()).filter(|e| !e.is_empty()) {
+                    ui.label(egui::RichText::new(e).small().color(egui::Color32::from_rgb(0xe0, 0x90, 0x70)));
+                }
+            });
+    }
+
+    /// A corner to resize the borderless window by.
+    fn resize_grip(&mut self, ctx: &egui::Context) {
+        egui::Area::new(egui::Id::new("grip"))
+            .anchor(egui::Align2::RIGHT_BOTTOM, [0.0, 0.0])
+            .show(ctx, |ui| {
+                let (r, resp) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::drag());
+                let c = if resp.hovered() { PAPER } else { egui::Color32::from_gray(140) };
+                for k in 1..=3 {
+                    let d = k as f32 * 5.0;
+                    ui.painter().line_segment(
+                        [r.right_bottom() - egui::vec2(d, 2.0), r.right_bottom() - egui::vec2(2.0, d)],
+                        egui::Stroke::new(1.5_f32, c));
+                }
+                if resp.drag_started() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(
+                        egui::ResizeDirection::SouthEast));
+                }
+            });
+    }
+
+    fn help_window(&mut self, ctx: &egui::Context) {
+        if !self.help_open { return }
+        let mut open = true;
+        egui::Window::new("Shortcuts")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                for (section, rows) in SHORTCUTS {
+                    ui.label(egui::RichText::new(*section).strong());
+                    egui::Grid::new(section).num_columns(2).spacing([18.0, 3.0]).show(ui, |ui| {
+                        for (keys, what) in *rows {
+                            ui.label(egui::RichText::new(*keys).monospace());
+                            ui.label(*what);
+                            ui.end_row();
+                        }
+                    });
+                    ui.add_space(6.0);
+                }
+            });
+        if !open { self.help_open = false }
+    }
+
+    /// The strip across the top that offers a new release, shows the download
+    /// and says what happened. Absent when there is nothing to say.
+    fn update_banner(&mut self, ctx: &egui::Context) {
+        let state = self.updater.state();
+        match &state {
+            update::State::Idle | update::State::Checking | update::State::UpToDate => return,
+            update::State::Available(r) if r.tag == self.settings.skip_update => return,
+            _ if self.update_hidden => return,
+            _ => {}
+        }
+        egui::TopBottomPanel::top("update").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                match state {
+                    update::State::Available(r) => {
+                        ui.label(egui::RichText::new(format!(
+                            "M&M Cartographer {} is available (you have {VERSION}).", r.tag)).strong());
+                        if r.installable() {
+                            if ui.button("Update now").on_hover_text(
+                                "Download it, check the maintainer's signature, and replace \
+                                 this program. Takes effect when you restart.").clicked()
+                            {
+                                self.updater.install(r.clone(), ctx);
+                            }
+                        } else if ui.button("Download\u{2026}").on_hover_text(
+                            "This release cannot be installed from here; open its page").clicked()
+                        {
+                            ctx.open_url(egui::OpenUrl::new_tab(&r.page));
+                        }
+                        if ui.button("What's new").clicked() {
+                            ctx.open_url(egui::OpenUrl::new_tab(&r.page));
+                        }
+                        if ui.button("Skip this version").clicked() {
+                            self.settings.skip_update = r.tag.clone();
+                            self.settings.save();
+                        }
+                    }
+                    update::State::Downloading { tag, done, total } => {
+                        ui.spinner();
+                        let mb = |b: u64| b as f64 / (1024.0 * 1024.0);
+                        ui.label(match total {
+                            Some(t) => format!("Downloading {tag}\u{2026} {:.1} of {:.1} MB", mb(done), mb(t)),
+                            None => format!("Downloading {tag}\u{2026} {:.1} MB", mb(done)),
+                        });
+                    }
+                    update::State::Installed { tag } => {
+                        ui.label(egui::RichText::new(format!(
+                            "Updated to {tag}. Restart to use it.")).strong());
+                        if ui.button("Restart now").clicked() {
+                            match self.updater.restart() {
+                                Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                                Err(e) => self.status = format!("restart failed: {e}; start it again yourself"),
+                            }
+                        }
+                    }
+                    update::State::Failed { msg, page } => {
+                        ui.label(egui::RichText::new(msg).color(egui::Color32::from_rgb(0xc0, 0x50, 0x40)));
+                        if let Some(p) = page {
+                            if ui.button("Open release page").clicked() {
+                                ctx.open_url(egui::OpenUrl::new_tab(&p));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("\u{d7}").on_hover_text("Hide until next launch").clicked() {
+                        self.update_hidden = true;
+                    }
+                });
+            });
+        });
+    }
+
     fn sidebar(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("side").exact_width(248.0).show(ctx, |ui| {
             ui.add_space(6.0);
@@ -1245,6 +1789,12 @@ impl App {
                     self.mset.undo();
                     self.status = "undid the last marker edit".into();
                 }
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Overlay").on_hover_text(
+                    "The map on top of the game, borderless and see-through (O)").clicked() {
+                    self.set_overlay(ctx, true);
+                }
                 if ui.button("Maps\u{2026}").on_hover_text(
                     "Generate or rebuild zone maps from your game install").clicked() {
                     self.maps_open = true;
@@ -1253,8 +1803,30 @@ impl App {
                     }
                 }
             });
+            // A first run keeps building after its first map appears; say so
+            // here, since the panel that showed progress has made way for it.
+            if self.gen_job.is_some() && !self.maps_open && !self.maps.is_empty() {
+                self.progress_ui(ui);
+                ui.add_space(4.0);
+            }
             ui.checkbox(&mut self.follow, "Follow game (tail Player.log)");
             ui.checkbox(&mut self.show_legend, "Legend on map");
+            ui.horizontal(|ui| {
+                let mut on = !self.settings.updates_off;
+                if ui.checkbox(&mut on, "Check for updates on launch").changed() {
+                    self.settings.updates_off = !on;
+                    self.settings.save();
+                }
+                if ui.add_enabled(!self.updater.busy(), egui::Button::new("Now").small())
+                    .on_hover_text("Ask GitHub for a newer release").clicked()
+                {
+                    // An explicit check shows even a skipped release.
+                    self.settings.skip_update.clear();
+                    self.settings.save();
+                    self.update_hidden = false;
+                    self.updater.check(ctx, false);
+                }
+            });
             ui.collapsing("Experimental", |ui| {
                 match &self.paint_job {
                     Some(job) => {
@@ -1293,12 +1865,15 @@ impl App {
             }
 
             ui.add_space(6.0);
-            ui.label(egui::RichText::new(
-                "right-click the map to add a marker\n\
-                 shift+right-click to copy a location\n\
-                 left-click a marker to open its note\n\
-                 Q / E or middle-drag to turn the map",
-            ).size(10.0).weak());
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(
+                    "right-click the map to add a marker\n\
+                     left-click a marker to open its note",
+                ).size(10.0).weak());
+                if ui.small_button("?").on_hover_text("Every shortcut (? or F1)").clicked() {
+                    self.help_open = !self.help_open;
+                }
+            });
 
             // ---- wiki connections for this zone --------------------------
             ui.add_space(8.0);
@@ -1346,7 +1921,7 @@ impl App {
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut self.marker_find)
                     .desired_width(130.0).hint_text("find\u{2026}"));
-                if ui.small_button("\u{2715}").on_hover_text("clear filters").clicked() {
+                if ui.small_button("\u{d7}").on_hover_text("clear filters").clicked() {
                     self.marker_find.clear();
                     self.hidden_kinds.clear();
                     self.show_mine = true;
@@ -1369,6 +1944,7 @@ impl App {
                 ui.checkbox(&mut self.show_imported,
                     egui::RichText::new("imported").size(11.0));
             });
+            self.elsewhere_list(ui);
             let mut open_id = None;
             let mut del_id = None;
             egui::ScrollArea::vertical().id_salt("marks").show(ui, |ui| {
@@ -1413,6 +1989,50 @@ impl App {
                 ui.label(egui::RichText::new(&self.status).size(10.0).weak());
             }
         });
+    }
+
+    /// Matches for the find box in every other zone, so "banker" finds the
+    /// banker wherever it is rather than only where you happen to be.
+    fn elsewhere_list(&mut self, ui: &mut egui::Ui) {
+        let q = self.marker_find.trim().to_lowercase();
+        if q.is_empty() { return }
+        if self.elsewhere.0 != q {
+            let mut hits = Vec::new();
+            for (zi, p) in self.maps.iter().enumerate() {
+                if zi == self.cur { continue }
+                for m in MarkerSet::load(&p.markers_path(&self.base)).items {
+                    if self.visible(&m) { hits.push((zi, m)) }
+                }
+            }
+            hits.sort_by(|a, b| (self.graph.pretty(&self.maps[a.0].name), &a.1.label)
+                .cmp(&(self.graph.pretty(&self.maps[b.0].name), &b.1.label)));
+            self.elsewhere = (q, hits);
+        }
+        if self.elsewhere.1.is_empty() { return }
+        ui.label(egui::RichText::new(format!("In other zones ({})", self.elsewhere.1.len()))
+            .size(11.0).strong());
+        let mut go: Option<(usize, String, f64, f64)> = None;
+        egui::ScrollArea::vertical().id_salt("elsewhere").max_height(120.0).show(ui, |ui| {
+            for (zi, m) in &self.elsewhere.1 {
+                let ki = kind(&m.kind);
+                let txt = format!("{}  \u{2014}  {}",
+                    self.graph.pretty(&self.maps[*zi].name),
+                    if m.label.is_empty() { ki.label } else { &m.label });
+                if ui.add(egui::Label::new(egui::RichText::new(txt).color(ki.color).size(11.0))
+                    .sense(egui::Sense::click())).on_hover_text("go there").clicked()
+                {
+                    go = Some((*zi, m.id.clone(), m.x, m.z));
+                }
+            }
+        });
+        ui.separator();
+        if let Some((zi, id, x, z)) = go {
+            self.open_zone(zi);
+            self.pending_center = Some((x, z));
+            self.begin_edit(&id, false);
+            // Its zone is now this one, so it moves out of this list.
+            self.elsewhere.0.clear();
+        }
     }
 
     /// Index of the marker under a screen position, if any.
@@ -1489,8 +2109,10 @@ impl App {
 
 impl App {
     fn map(&mut self, ctx: &egui::Context) {
+        let alpha = self.map_alpha();
+        let tint = egui::Color32::from_white_alpha((alpha * 255.0) as u8);
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(PAPER))
+            .frame(egui::Frame::none().fill(PAPER.gamma_multiply(alpha)))
             .show(ctx, |ui| {
                 let (resp, painter) =
                     ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
@@ -1515,7 +2137,7 @@ impl App {
                     tex.id(), vp,
                     egui::Rect::from_min_size(o.to_pos2(),
                         egui::vec2(vp.width() / s, vp.height() / s)),
-                    egui::Color32::WHITE,
+                    tint,
                 );
                 if self.maps.is_empty() {
                     // No maps: offer to build them from the user's own install
@@ -1673,7 +2295,7 @@ impl App {
                             let mut mesh = egui::Mesh::with_texture(tex.id());
                             for (pos, (u, v)) in corners.into_iter().zip(uvs) {
                                 mesh.vertices.push(egui::epaint::Vertex {
-                                    pos, uv: egui::pos2(u, v), color: egui::Color32::WHITE,
+                                    pos, uv: egui::pos2(u, v), color: tint,
                                 });
                             }
                             mesh.indices.extend([0, 1, 2, 0, 2, 3]);
@@ -1758,7 +2380,13 @@ impl App {
                 }
 
                 // ---- clicks -------------------------------------------------
-                if resp.clicked() {
+                // The marker ring sits above the map, so its clicks are taken
+                // before the map's own.
+                let ring_took = self.radial_ring(ui, vp);
+                if !ring_took && (resp.clicked() || resp.drag_started()) && self.radial.is_some() {
+                    // Clicking away dismisses the ring and does nothing else.
+                    self.radial = None;
+                } else if resp.clicked() && !ring_took {
                     if let Some(i) = hovered {
                         let m = self.mset.items[i].clone();
                         // A link wins over the "to <Zone>" travel behaviour:
@@ -1804,11 +2432,7 @@ impl App {
                             let id = self.mset.items[i].id.clone();
                             self.begin_edit(&id, false);
                         } else {
-                            let (wx, wz) = self.screen_to_world(p);
-                            // create provisionally so the dialog edits a real
-                            // record; removed again if the user cancels
-                            let id = self.mset.add(wx, wz, "", KINDS[0].key, "");
-                            self.begin_edit(&id, true);
+                            self.radial = Some(self.screen_to_world(p));
                         }
                     }
                 }
@@ -1818,6 +2442,64 @@ impl App {
                 self.compass(ui, vp);
                 self.floor_table(ui, vp);
             });
+    }
+
+    /// The ring of marker kinds around a right-clicked spot. Clicking a kind
+    /// places that marker at once; the middle opens the full dialog. Returns
+    /// whether it took this frame's click.
+    fn radial_ring(&mut self, ui: &mut egui::Ui, vp: egui::Rect) -> bool {
+        let Some((wx, wz)) = self.radial else { return false };
+        let c = self.world_to_screen(wx, wz);
+        if !vp.contains(c) { self.radial = None; return false }
+        // Pulled inside the window so a ring opened at the edge is whole.
+        const R: f32 = 46.0;
+        const ICON: f32 = 13.0;
+        let reach = R + ICON + 4.0;
+        let c = egui::pos2(
+            c.x.clamp(vp.left() + reach, (vp.right() - reach).max(vp.left() + reach)),
+            c.y.clamp(vp.top() + reach, (vp.bottom() - reach).max(vp.top() + reach)));
+        let painter = ui.painter().clone();
+        painter.circle_filled(c, reach, egui::Color32::from_black_alpha(70));
+        painter.circle_stroke(self.world_to_screen(wx, wz), 3.0, egui::Stroke::new(2.0_f32, INK));
+        let mut took = false;
+        let mut place: Option<usize> = None;
+        let mut details = false;
+        for (k, ki) in KINDS.iter().enumerate() {
+            // Clockwise from the top, in the order of the kinds list.
+            let a = k as f32 / KINDS.len() as f32 * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
+            let p = c + R * egui::vec2(a.cos(), a.sin());
+            let r = ui.interact(egui::Rect::from_center_size(p, egui::vec2(ICON * 2.4, ICON * 2.4)),
+                ui.id().with(("ring", k)), egui::Sense::click());
+            let grow = if r.hovered() { 1.25 } else { 1.0 };
+            icons::draw(&painter, ki.key, ki.color, p, ICON * grow);
+            if r.hovered() {
+                egui::show_tooltip_at_pointer(ui.ctx(), ui.layer_id(), egui::Id::new("ring_tip"), |ui| {
+                    ui.label(egui::RichText::new(ki.label).strong());
+                    ui.label(egui::RichText::new(ki.about).size(11.0));
+                });
+            }
+            if r.clicked() { place = Some(k); took = true }
+        }
+        let mid = ui.interact(egui::Rect::from_center_size(c, egui::vec2(26.0, 26.0)),
+            ui.id().with("ring_mid"), egui::Sense::click());
+        painter.circle(c, 12.0, if mid.hovered() { PAPER } else { egui::Color32::from_rgb(0xd8, 0xcc, 0xb0) },
+            egui::Stroke::new(1.5_f32, INK));
+        painter.text(c, egui::Align2::CENTER_CENTER, "\u{2026}",
+            egui::FontId::proportional(14.0), INK);
+        if mid.on_hover_text("A marker with a label and note").clicked() { details = true; took = true }
+        if let Some(k) = place {
+            self.mset.checkpoint();
+            self.mset.add(wx, wz, "", KINDS[k].key, "");
+            self.status = format!("added {} \u{2014} click it to add a note", KINDS[k].label.to_lowercase());
+            self.radial = None;
+        } else if details {
+            // Created provisionally so the dialog edits a real record; removed
+            // again if the user cancels.
+            let id = self.mset.add(wx, wz, "", KINDS[0].key, "");
+            self.begin_edit(&id, true);
+            self.radial = None;
+        }
+        took
     }
 
     /// Rows of the floor table, top to bottom: the top-level map, then the
@@ -2193,6 +2875,12 @@ fn main() -> eframe::Result<()> {
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("mnm-cartographer {VERSION}");
         return Ok(());
+    }
+    if let Some(a) = args.iter().find(|a| *a == "--update" || *a == "--check-update") {
+        return match update::cli(a == "--update") {
+            Ok(()) => Ok(()),
+            Err(e) => { eprintln!("update: {e}"); std::process::exit(1) }
+        };
     }
     let check = args.iter().any(|a| a == "--check");
     // Several flags take a value, and those values must not be mistaken for the
@@ -2962,7 +3650,9 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 860.0])
             .with_min_inner_size([720.0, 520.0])
-            .with_title(format!("M&M Cartographer {VERSION}")),
+            .with_title(format!("M&M Cartographer {VERSION}"))
+            // Needed at creation for an overlay to be see-through later.
+            .with_transparent(true),
         ..Default::default()
     };
     eframe::run_native(
