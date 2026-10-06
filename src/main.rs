@@ -893,6 +893,7 @@ impl App {
                 }
 
                 ui.separator();
+                self.build_heat_note(ui, egui::Color32::from_gray(150));
                 let busy = self.gen_job.as_ref().map_or(false, |j| !j.done);
                 let n = self.zone_picked.len();
                 ui.horizontal(|ui| {
@@ -954,6 +955,38 @@ impl App {
                 self.progress_ui(ui);
             });
         self.maps_open = open;
+    }
+
+    /// What building does to the CPU, and the setting that tempers it. Shown
+    /// wherever a build can be started, so nobody is surprised by the fans.
+    fn build_heat_note(&mut self, ui: &mut egui::Ui, dim: egui::Color32) {
+        ui.label(egui::RichText::new(
+            "Building maps works every CPU core hard for a few minutes: expect the \
+             fans to spin up and the CPU to run hot -- 90\u{b0}C or more at Full \
+             speed, which modern CPUs are built for. Balanced runs cooler; if your \
+             PC is prone to overheating, choose Cool.").small().color(dim));
+        ui.label(egui::RichText::new(
+            "Building while the game is running may make the game or your PC \
+             unstable: both need a lot of memory and CPU. Close the game first if \
+             you can.").small().color(egui::Color32::from_rgb(0xd0, 0x8a, 0x30)));
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("CPU while building").color(dim));
+            let cur = self.settings.build_cpu();
+            let name = gen::throttle::LEVELS.iter().find(|l| l.1 == cur)
+                .map_or_else(|| format!("{cur}%"), |l| l.0.to_string());
+            egui::ComboBox::from_id_salt("cpu").selected_text(name).show_ui(ui, |ui| {
+                for (label, pct, about) in gen::throttle::LEVELS {
+                    if ui.selectable_label(cur == *pct, *label).on_hover_text(*about).clicked() {
+                        self.settings.build_cpu = Some(*pct);
+                        self.settings.save();
+                        // Takes effect at once, even mid-build.
+                        gen::throttle::set_limit(*pct);
+                    }
+                }
+            }).response.on_hover_text(
+                "Every setting uses every core. Below full speed they rest in short, \
+                 regular pauses: cooler, and slower in proportion.");
+        });
     }
 
     /// Progress, estimate and cancel. Shared by the first-run panel and the
@@ -1035,6 +1068,11 @@ impl App {
                         "Choose the Monsters and Memories install folder.").small().color(dim));
                 }
             }
+            ui.add_space(8.0);
+            ui.scope(|ui| {
+                ui.set_max_width(460.0);
+                self.build_heat_note(ui, dim);
+            });
             ui.add_space(8.0);
 
             ui.horizontal(|ui| {
@@ -1464,7 +1502,7 @@ const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
 impl App {
     /// Debug builds only: `MNM_SHOT=out.png` puts the app in the states
     /// listed in `MNM_SHOT_STATE` (comma-separated: help, ring, overlay,
-    /// playing, find=<text>, share), saves a screenshot of its own window and
+    /// playing, find=<text>, share, maps), saves a screenshot of its own window and
     /// exits. For checking the UI without a person at the screen.
     fn dev_shot(&mut self, ctx: &egui::Context) {
         let Ok(out) = std::env::var("MNM_SHOT") else { return };
@@ -1474,6 +1512,7 @@ impl App {
                 match st.split_once('=').unwrap_or((st, "")) {
                     ("help", _) => self.help_open = true,
                     ("share", _) => self.share_open = true,
+                    ("maps", _) => { self.maps_open = true; self.refresh_zone_list() }
                     ("overlay", _) => self.set_overlay(ctx, true),
                     ("playing", _) => self.set_playing(ctx, true),
                     ("find", q) => self.marker_find = q.to_string(),
@@ -2892,7 +2931,7 @@ fn main() -> eframe::Result<()> {
     let mut consumed = std::collections::HashSet::new();
     for (i, a) in args.iter().enumerate() {
         let takes = match a.as_str() {
-            "--log" | "--out" | "--export" | "--import" | "--zone" | "--share"
+            "--log" | "--out" | "--export" | "--import" | "--zone" | "--share" | "--cpu"
             | "--debug-markers" => 1,
             // Optional value: only if the next argument is not itself a flag.
             "--generate" => usize::from(args.get(i + 1).is_some_and(|n| !n.starts_with("--"))),
@@ -3493,6 +3532,11 @@ fn main() -> eframe::Result<()> {
             return Ok(());
         };
         println!("install  {}", install.display());
+        let cpu = args.iter().position(|a| a == "--cpu")
+            .and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok())
+            .unwrap_or(settings.build_cpu());
+        gen::throttle::set_limit(cpu);
+        println!("cpu      {}%", gen::throttle::limit());
         let out = args.iter().position(|a| a == "--out")
             .and_then(|i| args.get(i + 1))
             .map(std::path::PathBuf::from)

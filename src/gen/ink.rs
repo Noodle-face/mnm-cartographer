@@ -341,6 +341,7 @@ pub fn render(height: &Grid, edges: &[f32], o: &InkOptions) -> Rendered {
         .zip(press.v.par_iter())
         .zip(ink.par_iter())
         .for_each(|((px, pr), ik)| {
+            super::throttle::gate();
             let k = (ik * (0.80 + 0.30 * pr)).clamp(0.0, 1.0);
             for c in 0..3 {
                 px[c] = px[c] * (1.0 - k) + inkc[c] * k;

@@ -95,7 +95,9 @@ impl Job {
         floors_only: bool,
         first: Option<String>,
     ) -> Job {
-        let floors_off = Settings::load().floors_off;
+        let settings = Settings::load();
+        super::throttle::set_limit(settings.build_cpu());
+        let floors_off = settings.floors_off;
         let (tx, rx) = channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let c = cancel.clone();
@@ -273,21 +275,32 @@ impl Job {
     }
 }
 
+/// What the first zone of a run costs in memory: every shared asset bundle,
+/// which every zone needs, plus its own scene bundle, decoded. Measured: a
+/// zone with a 100 KB map peaked at 11.6 GB, Underdocks at 17.3 GB.
+const FIRST_LANE_GB: f64 = 12.0;
+/// What each further zone in flight adds: its rasters, and its bundle when
+/// that is not one already open. Six at once peaked at 31 GB.
+const EXTRA_LANE_GB: f64 = 4.0;
+/// Do not start another zone with less than this free, unless nothing else
+/// is building -- a run always makes progress, one zone at a time if it must.
+const MIN_FREE_GB: f64 = 4.0;
+
 /// How many zones to build at once.
 ///
-/// Bounded by memory, not cores: a zone in flight renders all its zoom
-/// levels -- and its floors -- side by side, and the largest peak around
-/// 6 GB that way. The work inside each zone already spreads over every core,
-/// so more lanes than memory allows would only trade speed for swapping.
+/// Bounded by memory, not cores: the work inside each zone already spreads
+/// over every core, so more lanes than memory allows would only trade speed
+/// for swapping. `run_zones` also checks free memory before each zone starts,
+/// since the game, a browser or anything else may be using more by then.
 pub fn zone_concurrency() -> usize {
-    const PER_LANE_GB: f64 = 6.0;
     let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
     let by_cores = (cores / 2).clamp(1, 6);
-    match available_memory_gb() {
-        Some(gb) => ((gb / PER_LANE_GB) as usize).clamp(1, by_cores),
+    let lanes = match available_memory_gb() {
+        Some(gb) => (1 + ((gb - FIRST_LANE_GB).max(0.0) / EXTRA_LANE_GB) as usize).clamp(1, by_cores),
         // Unknown: assume a modest machine.
         None => by_cores.min(2),
-    }
+    };
+    super::throttle::scale_lanes(lanes)
 }
 
 /// Memory free for use, in GB, if the platform says.
@@ -374,9 +387,17 @@ pub struct Settings {
     pub overlay_passive: Option<f32>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub overlay_hotkey: String,
+    /// Share of the CPU map building may use, in percent; see throttle.rs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_cpu: Option<u8>,
 }
 
 impl Settings {
+    /// The CPU share for building, defaulting when never chosen.
+    pub fn build_cpu(&self) -> u8 {
+        self.build_cpu.unwrap_or(super::throttle::DEFAULT)
+    }
+
     pub fn load() -> Self {
         std::fs::read_to_string(settings_path())
             .ok()
@@ -434,6 +455,7 @@ pub struct PaintFrame {
 
 impl PaintJob {
     pub fn start(install: PathBuf, zone: String, out: PathBuf, frame: PaintFrame) -> PaintJob {
+        super::throttle::set_limit(Settings::load().build_cpu());
         let (tx, rx) = channel();
         let progress = Arc::new(std::sync::Mutex::new("finding the zone".to_string()));
         let prog = progress.clone();
@@ -524,12 +546,39 @@ pub fn run_zones<R: Send>(
     let queue: Mutex<std::collections::VecDeque<(usize, zones::Located)>> =
         Mutex::new(order.into_iter().map(|(_, _, l)| l).enumerate().collect());
     let results: Mutex<Vec<(usize, R)>> = Mutex::new(Vec::new());
+    // Zones building now, and when the last one started: a zone's memory
+    // climbs for a few seconds after it starts, so a free-memory reading
+    // taken sooner than that over-promises.
+    let active = std::sync::atomic::AtomicUsize::new(0);
+    let last_start: Mutex<Option<Instant>> = Mutex::new(None);
 
     std::thread::scope(|s| {
         for _ in 0..lanes.max(1) {
             s.spawn(|| loop {
                 if cancel.load(Ordering::Relaxed) { return }
-                let Some((i, l)) = queue.lock().unwrap().pop_front() else { return };
+                let next = {
+                    // One lane decides at a time, so two cannot both read the
+                    // same free memory and both start.
+                    let mut ls = last_start.lock().unwrap();
+                    let can = active.load(Ordering::Relaxed) == 0
+                        || (!ls.is_some_and(|t| t.elapsed().as_secs() < 5)
+                            && available_memory_gb().map_or(true, |gb| gb >= MIN_FREE_GB));
+                    if !can {
+                        None
+                    } else {
+                        let got = queue.lock().unwrap().pop_front();
+                        if got.is_some() {
+                            active.fetch_add(1, Ordering::Relaxed);
+                            *ls = Some(Instant::now());
+                        }
+                        Some(got)
+                    }
+                };
+                let (i, l) = match next {
+                    Some(Some(x)) => x,
+                    Some(None) => return,
+                    None => { std::thread::sleep(std::time::Duration::from_millis(500)); continue }
+                };
                 let slot = slots.lock().unwrap()[&l.bundle].clone();
                 // Open the bundle once; a lane arriving meanwhile waits here.
                 let env = {
@@ -547,6 +596,7 @@ pub fn run_zones<R: Send>(
                     sl.left -= 1;
                     if sl.left == 0 { sl.env = None } // last zone of this bundle
                 }
+                active.fetch_sub(1, Ordering::Relaxed);
                 results.lock().unwrap().push((i, r));
             });
         }

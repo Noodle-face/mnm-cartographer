@@ -49,8 +49,31 @@ The whole set is about **150 MB** — roughly 19,000 tiles, WebP inside SQLite,
 one file per zone, plus a map per floor for the twelve zones built on top of
 themselves (see below). The scan finds 45 zones and about 43 produce a map; the
 rest are unbuilt stubs with no walkable geometry. On an 8-core machine the whole
-set takes around four minutes, about three without floors. How many zones build
-at once depends on free memory, at roughly 6 GB each.
+set takes around five minutes at the default setting.
+
+### CPU, heat and memory
+
+Building works every core hard, so fans spin up and the CPU runs hot while it
+lasts. **CPU while building**, in the Maps panel and on the first-run screen,
+sets how hard:
+
+| setting | what it does | full rebuild* | CPU peak* |
+|---|---|---|---|
+| Full speed | every core flat out | 4:04 | 94.6 °C |
+| **Balanced** (default) | every core, resting 30% of the time | 4:49 | 85.8 °C |
+| Cool | every core, resting more than half the time | 6:22 | 79.8 °C |
+
+\* All 44 zones on a Ryzen 7 9800X3D with 62 GB of RAM, from a 44 °C idle.
+
+The cooler settings do not lower clock speeds; the cores work at full speed in
+short bursts and rest in between, which keeps the average power, and so the
+temperature, down. A change takes effect at once, even mid-build.
+
+Memory matters as much: the first zone in flight needs about 12 GB, since every
+zone draws on the game's shared asset bundles, and each further zone about 4 GB
+more. How many build at once follows free memory, and no new zone starts with
+less than 4 GB free unless nothing else is building. Building while the game
+is running can still make either unstable; close the game first if you can.
 
 Each map is cut to the area a player can actually reach, with a thin margin.
 Zone scenes carry their neighbours' scenery, leftover development copies and
@@ -295,6 +318,7 @@ The examples below use the Linux form. Drop the `./` and add `.exe` for Windows.
 | `--generate <zone>` | build only zones matching that text, e.g. `--generate underdocks` |
 | `--generate --force` | rebuild even if the map already exists |
 | `--generate --out <dir>` | write maps somewhere other than the data directory |
+| `--generate --cpu <percent>` | hold the build to a share of the CPU, e.g. `--cpu 45`; default 70 |
 | `--clean` | delete generated maps (never touches markers or `connections.json`) |
 | `--clean --all` | also drop the zone cache, so the next run rescans every bundle |
 | `--log <path>` | point at a specific `Player.log` if auto-detection fails |
@@ -366,7 +390,7 @@ Only useful if you are working on the renderer:
 
 A debug build (`cargo run`) also takes `MNM_SHOT=out.png`: it opens, sets up the
 states listed in `MNM_SHOT_STATE` (comma-separated: `help`, `ring`, `overlay`,
-`playing`, `share`, `find=<text>`), saves a screenshot of its own window and
+`playing`, `share`, `maps`, `find=<text>`), saves a screenshot of its own window and
 exits. For checking the UI without sitting at it.
 
 ## Where maps come from

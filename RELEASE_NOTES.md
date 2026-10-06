@@ -1,23 +1,18 @@
 ## What's new
 
-- **Updates itself** -- when a new version is out, a banner offers to install
-  it. It downloads the new version, checks the maintainer's signature, and
-  swaps it in; restart to use it. This is the last version you need to
-  download by hand. Untick **Check for updates on launch** in the sidebar if
-  you would rather it never asked GitHub.
-- **Overlay mode** -- press **O** (or **Overlay** in the sidebar) to put the map
-  on top of the game, borderless and see-through. **Ctrl+Shift+M** in the game
-  switches between playing (clicks go through to the game; the map can fade or
-  vanish) and using the map.
-- **Drop a marker in two clicks** -- right-click the map for a ring of marker
-  kinds and click one. The middle of the ring opens the full dialog as before.
-- **Search every zone** -- the find box now lists matches in other zones too;
-  click one to go there.
-- **Subscribe to marker packs** -- paste a pack's link under **Share… →
-  Subscriptions** and it is checked for new markers every time the app starts.
-- **Faster first run** -- the zone you are standing in is built first and opens
-  in about a minute; the rest build behind it.
-- **Shortcuts** -- press **?** or **F1** for every key and mouse action.
+- **Cooler map building** -- building maps now rests the CPU in short, regular
+  pauses by default (**Balanced**). It takes about a fifth longer and keeps
+  the CPU around 10 °C cooler: on a Ryzen 9800X3D a full rebuild peaked at
+  86 °C instead of 95 °C. **CPU while building** in the Maps panel offers Full
+  speed, Balanced and Cool.
+- **Gentler on memory** -- how many zones build at once now follows how much
+  memory is actually free, and a build waits rather than push a PC with the
+  game open into running out.
+- **A heads-up before building** -- the Maps panel and first-run screen now say
+  what a build does to your CPU, and that building while the game is running
+  may cause instability.
+
+You are on 0.0.5 or later, so **Update now** in the banner installs this.
 
 ## Install
 

@@ -146,6 +146,7 @@ pub fn analyze(height: &Grid, ppu: f64, edges: &[f32], step_thresh: f32) -> Anal
     let mut layers: Vec<(usize, Mask)> = (0..nb)
         .into_par_iter()
         .filter_map(|k| {
+            super::throttle::gate();
             let mut m = Mask::new(hf.w, hf.h, false);
             for i in 0..m.v.len() {
                 m.v[i] = band[i] >= k && land.v[i];

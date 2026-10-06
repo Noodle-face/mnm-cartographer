@@ -108,6 +108,7 @@ use rayon::prelude::*;
 fn transpose<T: Copy + Send + Sync + Default>(v: &[T], w: usize, h: usize) -> Vec<T> {
     let mut out = vec![T::default(); w * h];
     out.par_chunks_mut(h).enumerate().for_each(|(x, col)| {
+        super::throttle::gate();
         for y in 0..h { col[y] = v[y * w + x] }
     });
     out
@@ -118,7 +119,7 @@ fn rows<T: Copy + Send + Sync + Default, U: Copy + Send + Sync + Default>(
     v: &[T], w: usize, f: impl Fn(&[T], &mut [U]) + Sync,
 ) -> Vec<U> {
     let mut out = vec![U::default(); v.len()];
-    out.par_chunks_mut(w).zip(v.par_chunks(w)).for_each(|(o, i)| f(i, o));
+    out.par_chunks_mut(w).zip(v.par_chunks(w)).for_each(|(o, i)| { super::throttle::gate(); f(i, o) });
     out
 }
 
@@ -194,6 +195,7 @@ pub fn upsample(g: &Grid, w: usize, h: usize) -> Grid {
     let sx = (g.w.max(2) - 1) as f32 / (w.max(2) - 1) as f32;
     let sy = (g.h.max(2) - 1) as f32 / (h.max(2) - 1) as f32;
     out.v.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+        super::throttle::gate();
         let fy = (y as f32 * sy).clamp(0.0, g.h as f32 - 1.0);
         let (y0, fry) = (fy.floor() as usize, fy.fract());
         let y1 = (y0 + 1).min(g.h - 1);
@@ -342,7 +344,7 @@ pub fn edt(src: &Mask) -> (Grid, Vec<u32>) {
         }
     }
     let both = |f: &mut Vec<f64>, idx: &mut Vec<u32>, lw: usize| {
-        f.par_chunks_mut(lw).zip(idx.par_chunks_mut(lw)).for_each(|(a, b)| pass(a, b));
+        f.par_chunks_mut(lw).zip(idx.par_chunks_mut(lw)).for_each(|(a, b)| { super::throttle::gate(); pass(a, b) });
     };
     let mut ft = transpose(&f, w, h);
     let mut it = transpose(&idx, w, h);
@@ -382,6 +384,7 @@ pub fn dilate(m: &Mask, se: &[(isize, isize)]) -> Mask {
     let mut out = Mask::new(m.w, m.h, false);
     let (w, h) = (m.w as isize, m.h as isize);
     out.v.par_chunks_mut(m.w).enumerate().for_each(|(y, row)| {
+        super::throttle::gate();
         for x in 0..m.w {
             row[x] = se.iter().any(|(dx, dy)| {
                 let (nx, ny) = (x as isize - dx, y as isize - dy);
@@ -396,6 +399,7 @@ pub fn erode(m: &Mask, se: &[(isize, isize)]) -> Mask {
     let mut out = Mask::new(m.w, m.h, false);
     let (w, h) = (m.w as isize, m.h as isize);
     out.v.par_chunks_mut(m.w).enumerate().for_each(|(y, row)| {
+        super::throttle::gate();
         for x in 0..m.w {
             let mut all = true;
             for (dx, dy) in se {
@@ -566,6 +570,7 @@ pub fn median3(g: &Grid) -> Grid {
     let (w, h) = (g.w as isize, g.h as isize);
     let mut out = Grid::new(g.w, g.h, 0.0);
     out.v.par_chunks_mut(g.w).enumerate().for_each(|(y, row)| {
+        super::throttle::gate();
         let mut buf = [0.0f32; 9];
         for x in 0..g.w {
             let mut n = 0;
@@ -590,6 +595,7 @@ pub fn gradient(g: &Grid) -> (Grid, Grid) {
     let mut gy = Grid::new(g.w, g.h, 0.0);
     let mut gx = Grid::new(g.w, g.h, 0.0);
     gy.v.par_chunks_mut(g.w).zip(gx.v.par_chunks_mut(g.w)).enumerate().for_each(|(y, (ry, rx))| {
+        super::throttle::gate();
         for x in 0..g.w {
             let a = g.at(x, if y + 1 < g.h { y + 1 } else { y });
             let b = g.at(x, y.saturating_sub(1));
@@ -674,6 +680,9 @@ pub fn skeletonize(m: &Mask) -> Mask {
 pub fn warp(g: &Grid, dx: &Grid, dy: &Grid) -> Grid {
     let mut out = Grid::new(g.w, g.h, 0.0);
     for y in 0..g.h {
+        // Serial, but run once per plane in parallel; a whole plane is too
+        // long a step to leave ungated.
+        super::throttle::gate();
         for x in 0..g.w {
             let sx = (x as f32 + dx.at(x, y)).clamp(0.0, g.w as f32 - 1.0);
             let sy = (y as f32 + dy.at(x, y)).clamp(0.0, g.h as f32 - 1.0);

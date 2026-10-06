@@ -149,6 +149,7 @@ fn hillshade(z: &Grid, ppu: f64, alt_deg: f32) -> Grid {
     let (alt, az) = (alt_deg.to_radians(), 315f32.to_radians());
     let light = [az.sin() * alt.cos(), az.cos() * alt.cos(), alt.sin()]; // (east, north, up)
     let v = gx.v.par_iter().zip(&gy.v).map(|(&dx, &dz)| {
+        super::throttle::gate();
         let n = [-dx * k, -dz * k, 1.0];
         let l = (n[0] * n[0] + n[1] * n[1] + 1.0).sqrt();
         ((n[0] * light[0] + n[1] * light[1] + n[2] * light[2]) / l).clamp(0.0, 1.0)
@@ -200,6 +201,7 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
                 .unwrap_or(mc::SAND as usize) as u8;
             let (gy, gx) = gradient(&blur(&hf, px(1.2)));
             (0..n).into_par_iter().map(|i| {
+                super::throttle::gate();
                 let j = nearest[i];
                 let t = if j == u32::MAX { u16::MAX } else { tags[j as usize] };
                 let (x, z) = world_of(i);
@@ -304,6 +306,7 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
     // ---- dune field: a height of wind-shaped ridges ----------------------
     let th = 28f64.to_radians();
     let duneh = Grid { w, h, v: (0..n).into_par_iter().map(|i| {
+        super::throttle::gate();
         let (x, z) = world_of(i);
         let warp = fbm(x, z, 220.0, 1) as f64 * 60.0;
         let c = x * th.cos() - z * th.sin() + warp;
@@ -319,6 +322,7 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
     let shade_d = hillshade(&duneh, ppu, 35.0);
     let shade_t = hillshade(&Grid { w, h, v: hs.v.iter().map(|t| t * 0.5).collect() }, ppu, 45.0);
     let rock_relief = Grid { w, h, v: (0..n).into_par_iter().map(|i| {
+        super::throttle::gate();
         let (x, z) = world_of(i);
         hs.v[i] + fbm(x, z, 25.0, 7) * 3.0
     }).collect() };
@@ -331,6 +335,7 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
     let (deep, shallow) = (rgb(12, 118, 160), rgb(58, 196, 205));
     let (foam_c, foam2_c) = (rgb(235, 245, 240), rgb(215, 238, 236));
     let mut img: Vec<[f32; 3]> = (0..n).into_par_iter().map(|i| {
+        super::throttle::gate();
         let (x, z) = world_of(i);
         // ground, by what it is made of
         let tone = fbm(x, z, 300.0, 5);

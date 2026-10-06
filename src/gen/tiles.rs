@@ -276,6 +276,7 @@ fn build(
         let ny = (h + TILE - 1) / TILE;
         let _te = super::Timer::start("tile encode");
         let tiles: Vec<(usize, usize, Vec<u8>)> = (0..nx * ny).into_par_iter().map(|k| {
+            super::throttle::gate();
             let (tx, ty) = (k / ny, k % ny);
             // Partial edge tiles are padded to a full tile with paper,
             // so every stored tile is exactly TILE square.
