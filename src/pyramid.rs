@@ -24,6 +24,8 @@ pub struct Pyramid {
     /// (min_x, max_x, min_z, max_z) in world units, shared by every level.
     pub extent: [f64; 4],
     pub levels: Vec<Level>,
+    /// For one floor of a multi-storey zone: its number (1 = lowest) and name.
+    pub floor: Option<(usize, String)>,
     conn: Connection,
 }
 
@@ -51,7 +53,10 @@ impl Pyramid {
         levels.sort_by_key(|l| l.z);
         let extent: [f64; 4] = serde_json::from_str(&meta("extent")?)?;
 
-        Ok(Self { path: path.to_path_buf(), name, tile, extent, levels, conn })
+        let floor = meta("floor").ok().and_then(|n| n.parse().ok())
+            .map(|n| (n, meta("floor_name").unwrap_or_default()));
+
+        Ok(Self { path: path.to_path_buf(), name, tile, extent, levels, floor, conn })
     }
 
     pub fn scene_rect(&self) -> egui::Rect {
@@ -124,6 +129,32 @@ pub fn world_to_scene(wx: f64, wz: f64) -> egui::Pos2 {
 }
 pub fn scene_to_world(p: egui::Pos2) -> (f64, f64) {
     (p.x as f64, -p.y as f64)
+}
+
+/// The floor maps of the zone map at `map`, lowest first. Empty for a zone
+/// with one level, or one generated before floors existed.
+pub fn floors_of(map: &Path) -> Vec<Pyramid> {
+    let Ok(rd) = std::fs::read_dir(crate::gen::floors::dir_for(map)) else { return Vec::new() };
+    let mut out: Vec<Pyramid> = rd.filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("mbtiles"))
+        .filter_map(|p| Pyramid::open(&p).ok())
+        .filter(|p| p.floor.is_some())
+        .collect();
+    out.sort_by_key(|p| p.floor.as_ref().map(|f| f.0));
+    out
+}
+
+/// Where the painted version of the map at `map` lives, beside its floors.
+pub fn painted_path(map: &Path) -> PathBuf {
+    let stem = map.file_stem().unwrap_or_default();
+    map.parent().unwrap_or(Path::new(".")).join("painted").join(stem).with_extension("mbtiles")
+}
+
+/// The painted version of the map at `map`, if one has been made.
+pub fn painted_of(map: &Path) -> Option<Pyramid> {
+    let p = painted_path(map);
+    p.is_file().then(|| Pyramid::open(&p).ok()).flatten()
 }
 
 /// Every pyramid under `base`: a flat directory of .mbtiles, or a maps/ subdir.

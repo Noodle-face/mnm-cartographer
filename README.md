@@ -43,10 +43,25 @@ Generated maps go to your data directory, not next to the executable:
 %APPDATA%\mnm-cartographer\maps\             Windows
 ```
 
-The whole set is about **96 MB** — roughly 12,000 tiles, WebP inside SQLite, one
-file per zone. The scan finds 45 zones and about 43 produce a map; the rest are
-unbuilt stubs with no walkable geometry. A large zone like Underdocks takes
-around 18 seconds and small ones under a second, with six building at once.
+The whole set is about **150 MB** — roughly 19,000 tiles, WebP inside SQLite,
+one file per zone, plus a map per floor for the twelve zones built on top of
+themselves (see below). The scan finds 45 zones and about 43 produce a map; the
+rest are unbuilt stubs with no walkable geometry. On an 8-core machine the whole
+set takes around four minutes, about three without floors. How many zones build
+at once depends on free memory, at roughly 6 GB each.
+
+Each map is cut to the area a player can actually reach, with a thin margin.
+Zone scenes carry their neighbours' scenery, leftover development copies and
+backdrop terrain; the generator drops those, using the zone's own invisible
+walls where it has them and where you can walk where it does not.
+
+### Floors
+
+Zones built on top of themselves -- Blind Midden, King Pyrotr's Fortress, the
+crypts and others -- also get a map per floor. A **Floors** table on the map
+switches between them; the top-level map is the default. In the Maps panel each
+floor can be ticked off to skip it, and **Floors only** rebuilds just the floors
+of the selected zones, keeping their top-level maps.
 
 ### The Maps panel
 
@@ -74,6 +89,10 @@ bundle's size and timestamp, so it is only re-read when something changed.
 | drag | pan |
 | wheel | zoom (fit is as far out as it goes) |
 | `F` / `Home` | fit the whole map |
+| `Q` / `E` | turn the map 15° left / right |
+| middle-drag | turn the map freely |
+| drag the compass | turn the map; click it for north up (or `N`) |
+| `PgUp` / `PgDn` | step through floors, in zones that have them |
 | `Ctrl+Z` | undo the last marker edit |
 | shift + right-click | copy a location to paste in chat |
 | right-click the map | add a marker |
@@ -81,6 +100,15 @@ bundle's size and timestamp, so it is only re-read when something changed.
 | right-click a marker | edit or delete |
 | drag a marker | move it |
 | `Esc` | close the dialog |
+
+Each zone remembers its own rotation. The compass in the top right turns with
+the map, so north is always readable.
+
+**Experimental → Paint this map** in the sidebar renders the open zone in a
+full-colour painted style from your game files, in the background, in about
+half a minute. **Show painted style** then switches between it and the inked
+map; markers sit in the same place on both. The palette is desert, so it suits
+sandy zones best for now.
 
 The readout is in **game world coordinates**. Markers are stored in world space,
 so they stay put across zoom levels.

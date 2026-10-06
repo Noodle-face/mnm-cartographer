@@ -35,6 +35,12 @@ pub struct Settings {
     pub bands: usize,
     pub step_thresh: f32,
     pub quality: f32,
+    /// Build a zone's floor maps along with its top-level map.
+    pub floors: bool,
+    /// Floors (numbered from 1) to leave out.
+    pub skip_floors: Vec<usize>,
+    /// Rebuild only the floors, keeping the top-level map already built.
+    pub floors_only: bool,
 }
 
 impl Default for Settings {
@@ -50,6 +56,9 @@ impl Default for Settings {
             bands: 8,
             step_thresh: 3.2,
             quality: 85.0,
+            floors: true,
+            skip_floors: Vec::new(),
+            floors_only: false,
         }
     }
 }
@@ -59,8 +68,8 @@ impl Default for Settings {
 /// coarsest and finest -- enough that a marker placed at one zoom lands
 /// visibly off at another. Markers live in world space, so levels must agree
 /// on world space exactly.
-pub fn plan(tris: &[Tri], s: &Settings) -> (raster::Bbox, f64) {
-    let bbox = raster::auto_bbox(tris);
+pub fn plan(tris: &[Tri], frame: Option<raster::Bbox>, s: &Settings) -> (raster::Bbox, f64) {
+    let bbox = frame.unwrap_or_else(|| raster::auto_bbox(tris));
     let area = ((bbox.1 - bbox.0) * (bbox.3 - bbox.2)).max(1.0);
     let top = (s.budget_mp * 1e6 / area).sqrt();
     let top = s.max_ppu.min(2f64.powf(top.max(1e-6).log2().round()));
@@ -72,16 +81,137 @@ pub struct ZoneInput<'a> {
     pub tris: &'a [Tri],
     pub sea: Option<f32>,
     pub props: &'a BTreeMap<String, Vec<(f64, f64)>>,
+    /// The world box to frame the map on, or None for the whole of `tris`.
+    pub bbox: Option<raster::Bbox>,
 }
 
-/// Build the pyramid. `on_level` is called as each level completes.
-pub fn build(
+/// Build a zone's map, and a map per floor if it has floors (see
+/// [`super::floors`]). `on_level` is called as each zoom level of each map
+/// completes, with the count done and the count in all.
+///
+/// The maps are built side by side. Inking one keeps under two cores busy,
+/// so five in a row took 140s where side by side they take little more than
+/// the slowest. They run on the caller's thread pool, whose size is what
+/// bounds memory, so floors add work but not peak memory.
+pub fn build_zone(
     out: &Path,
     z: &ZoneInput,
     s: &Settings,
-    mut on_level: impl FnMut(usize, usize),
+    on_level: impl FnMut(usize, usize) + Send,
 ) -> Result<(usize, u64)> {
-    let (bbox, base_ppu) = plan(z.tris, s);
+    // Floors only: reuse the frame of the map already there, so every floor
+    // lines up with it exactly. Without one there is nothing to line up with.
+    let existing = if s.floors_only { frame_of(out) } else { None };
+    if s.floors_only && existing.is_none() {
+        anyhow::bail!("no top-level map to build floors for; build the zone first");
+    }
+    let frame = existing.unwrap_or_else(|| plan(z.tris, z.bbox, s));
+    let floors = if s.floors {
+        super::floors::split(z.tris, super::floors::plan(z.name))
+    } else {
+        Vec::new()
+    };
+
+    // Floors are rebuilt with their zone or not at all, so a zone that loses
+    // a floor does not keep a stale one.
+    let dir = super::floors::dir_for(out);
+    if s.floors {
+        // A rebuilt top-level map may sit in a new frame; any floor not
+        // rebuilt with it would no longer line up, so it goes. Rebuilding
+        // only floors keeps the frame, and the floors left out stay.
+        if !s.floors_only { std::fs::remove_dir_all(&dir).ok(); }
+    }
+    let no_props = BTreeMap::new();
+    // Every floor uses the top-level map's frame: they must agree on world
+    // space and zoom levels, or markers and the view would shift when
+    // switching floor. Scene props are left off floors; they carry no height
+    // to say which floor they stand on.
+    let mut jobs = Vec::new();
+    if !s.floors_only {
+        jobs.push((out.to_path_buf(), ZoneInput { ..*z }, Style::Ink));
+    }
+    for (i, (f, tris)) in floors.iter().enumerate() {
+        if tris.is_empty() || s.skip_floors.contains(&(i + 1)) { continue }
+        jobs.push((
+            dir.join(super::floors::file_name(i)),
+            ZoneInput { name: z.name, tris, sea: z.sea, props: &no_props, bbox: z.bbox },
+            Style::Floor(i, f.name),
+        ));
+    }
+
+    let total = s.zooms * jobs.len();
+    let progress = std::sync::Mutex::new((0usize, on_level));
+    // One thread per map, for the same reason levels get their own: long
+    // jobs must not occupy the shared pool.
+    let results: Vec<Result<(usize, u64)>> = std::thread::scope(|sc| {
+        let hs: Vec<_> = jobs.iter().map(|(path, zi, style)| {
+            let progress = &progress;
+            sc.spawn(move || build(path, zi, frame, *style, s, &mut |_, _| {
+                let mut p = progress.lock().unwrap();
+                p.0 += 1;
+                let done = p.0;
+                (p.1)(done, total);
+            }))
+        }).collect();
+        hs.into_iter().map(|h| h.join().expect("map build panicked")).collect()
+    });
+    let (mut n, mut b) = (0, 0);
+    for r in results {
+        let (rn, rb) = r?;
+        n += rn;
+        b += rb;
+    }
+    Ok((n, b))
+}
+
+/// The frame (world box, coarsest pixels per unit) and zoom count of the map
+/// at `path`, read back from its metadata.
+pub fn frame_of(path: &Path) -> Option<(raster::Bbox, f64)> {
+    let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    let get = |k: &str| db.query_row("SELECT value FROM metadata WHERE name=?1", [k],
+                                     |r| r.get::<_, String>(0)).ok();
+    let e: [f64; 4] = serde_json::from_str(&get("extent")?).ok()?;
+    let zooms: Vec<serde_json::Value> = serde_json::from_str(&get("zooms")?).ok()?;
+    let ppu = zooms.iter().filter_map(|z| z.get("ppu")?.as_f64())
+        .fold(f64::MAX, f64::min);
+    (ppu.is_finite() && ppu < f64::MAX).then_some(((e[0], e[1], e[2], e[3]), ppu))
+}
+
+/// How a pyramid is drawn.
+#[derive(Clone, Copy)]
+pub enum Style<'a> {
+    /// The ordinary inked map.
+    Ink,
+    /// One floor of a multi-storey zone: its index and name.
+    Floor(usize, &'a str),
+    /// The experimental painted style; see [`super::paint`].
+    Painted,
+}
+
+/// Paint a zone into the frame of a map it already has -- the same world
+/// box and zoom levels -- so the two line up exactly and markers sit in the
+/// same place on both.
+pub fn build_painted(
+    out: &Path,
+    z: &ZoneInput,
+    frame: (raster::Bbox, f64),
+    zooms: usize,
+    on_level: &mut (impl FnMut(usize, usize) + Send),
+) -> Result<(usize, u64)> {
+    let s = Settings { zooms, ..Settings::default() };
+    build(out, z, frame, Style::Painted, &s, on_level)
+}
+
+/// Build one pyramid into `frame` (world bbox, coarsest pixels per unit).
+fn build(
+    out: &Path,
+    z: &ZoneInput,
+    frame: (raster::Bbox, f64),
+    style: Style,
+    s: &Settings,
+    on_level: &mut (impl FnMut(usize, usize) + Send),
+) -> Result<(usize, u64)> {
+    let (bbox, base_ppu) = frame;
     let edges = raster::global_band_edges(z.tris, s.bands);
 
     if let Some(p) = out.parent() {
@@ -99,68 +229,104 @@ pub fn build(
     let mut total_tiles = 0usize;
     let mut total_bytes = 0u64;
 
-    for zi in 0..s.zooms {
+    // The zoom levels are independent renders of the same geometry: make
+    // them side by side, then write them in order. Each level gets its own
+    // thread rather than a task on the shared pool: a level is one long job,
+    // and long jobs parked on pool threads starve the short parallel work
+    // inside every other zone -- one zone waited 184s for 9s of work.
+    use rayon::prelude::*;
+    let progress = std::sync::Mutex::new((0usize, on_level));
+    let render_level = |zi: usize| {
         let ppu = base_ppu * 2f64.powi(zi as i32);
         if super::profiling() { eprintln!("    level {zi} (ppu {ppu})") }
         let height = { let _t = super::Timer::start("rasterize");
-            raster::rasterize(z.tris, ppu, bbox) };
-        let r = ink::render(&height, &edges, &ink::InkOptions {
-            ppu,
-            step_thresh: s.step_thresh,
-            sea: z.sea,
-            seed: 5,
-        });
-        let mut img = r.img;
-        let on_land = ink::props_on_land(z.props, &r.dry, bbox);
-        ink::draw_props(&mut img, bbox, ppu, &on_land);
+            match style {
+                // Roofs sit 4-14 units over their rooms, bridges ~30 over the
+                // hall they cross; see rasterize_floor.
+                Style::Floor(..) => raster::rasterize_floor(z.tris, ppu, bbox, 2.5, 20.0),
+                _ => raster::rasterize(z.tris, ppu, bbox),
+            } };
+        let img = match style {
+            Style::Painted => super::paint::render(&height, z.props, &super::paint::PaintOptions {
+                ppu, sea: z.sea, bbox,
+            }),
+            _ => {
+                let r = ink::render(&height, &edges, &ink::InkOptions {
+                    ppu,
+                    step_thresh: s.step_thresh,
+                    sea: z.sea,
+                    seed: 5,
+                });
+                let mut img = r.img;
+                let on_land = ink::props_on_land(z.props, &r.dry, bbox);
+                ink::draw_props(&mut img, bbox, ppu, &on_land);
+                img
+            }
+        };
+        drop(height);
 
         let (w, h) = (img.w, img.h);
         let nx = (w + TILE - 1) / TILE;
         let ny = (h + TILE - 1) / TILE;
-        let _te = super::Timer::start("tile encode+write");
-        let tx_db = db.transaction()?;
-        {
-            let mut stmt = tx_db.prepare("INSERT OR REPLACE INTO tiles VALUES (?,?,?,?)")?;
-            for tx in 0..nx {
-                for ty in 0..ny {
-                    // Partial edge tiles are padded to a full tile with paper,
-                    // so every stored tile is exactly TILE square.
-                    let mut buf = vec![246u8, 240, 226].repeat(TILE * TILE);
-                    for yy in 0..TILE {
-                        let sy = ty * TILE + yy;
-                        if sy >= h {
-                            break;
-                        }
-                        for xx in 0..TILE {
-                            let sx = tx * TILE + xx;
-                            if sx >= w {
-                                break;
-                            }
-                            let p = img.v[sy * w + sx];
-                            let o = (yy * TILE + xx) * 3;
-                            buf[o] = (p[0] * 255.0).clamp(0.0, 255.0) as u8;
-                            buf[o + 1] = (p[1] * 255.0).clamp(0.0, 255.0) as u8;
-                            buf[o + 2] = (p[2] * 255.0).clamp(0.0, 255.0) as u8;
-                        }
+        let _te = super::Timer::start("tile encode");
+        let tiles: Vec<(usize, usize, Vec<u8>)> = (0..nx * ny).into_par_iter().map(|k| {
+            let (tx, ty) = (k / ny, k % ny);
+            // Partial edge tiles are padded to a full tile with paper,
+            // so every stored tile is exactly TILE square.
+            let mut buf = vec![246u8, 240, 226].repeat(TILE * TILE);
+            for yy in 0..TILE {
+                let sy = ty * TILE + yy;
+                if sy >= h {
+                    break;
+                }
+                for xx in 0..TILE {
+                    let sx = tx * TILE + xx;
+                    if sx >= w {
+                        break;
                     }
-                    let enc = webp::Encoder::from_rgb(&buf, TILE as u32, TILE as u32);
-                    let blob = enc.encode(s.quality);
-                    total_bytes += blob.len() as u64;
-                    total_tiles += 1;
-                    stmt.execute(rusqlite::params![zi as i64, tx as i64, ty as i64, &*blob])?;
+                    let p = img.v[sy * w + sx];
+                    let o = (yy * TILE + xx) * 3;
+                    buf[o] = (p[0] * 255.0).clamp(0.0, 255.0) as u8;
+                    buf[o + 1] = (p[1] * 255.0).clamp(0.0, 255.0) as u8;
+                    buf[o + 2] = (p[2] * 255.0).clamp(0.0, 255.0) as u8;
                 }
             }
+            let enc = webp::Encoder::from_rgb(&buf, TILE as u32, TILE as u32);
+            (tx, ty, enc.encode(s.quality).to_vec())
+        }).collect();
+        {
+            let mut p = progress.lock().unwrap();
+            p.0 += 1;
+            let done = p.0;
+            (p.1)(done, s.zooms);
         }
-        tx_db.commit()?;
+        (zi, ppu, w, h, tiles)
+    };
+    let levels: Vec<(usize, f64, usize, usize, Vec<(usize, usize, Vec<u8>)>)> =
+        std::thread::scope(|sc| {
+            let hs: Vec<_> = (0..s.zooms).map(|zi| sc.spawn(move || render_level(zi))).collect();
+            hs.into_iter().map(|h| h.join().expect("level render panicked")).collect()
+        });
 
-        zooms_meta.push(serde_json::json!({
-            "z": zi, "ppu": ppu, "px": [w, h], "tiles": [nx, ny],
-            "extent": [bbox.0, bbox.1, bbox.2, bbox.3],
-        }));
-        on_level(zi + 1, s.zooms);
+    let tx_db = db.transaction()?;
+    {
+        let mut stmt = tx_db.prepare("INSERT OR REPLACE INTO tiles VALUES (?,?,?,?)")?;
+        for (zi, ppu, w, h, tiles) in &levels {
+            let (nx, ny) = ((w + TILE - 1) / TILE, (h + TILE - 1) / TILE);
+            for (tx, ty, blob) in tiles {
+                total_bytes += blob.len() as u64;
+                total_tiles += 1;
+                stmt.execute(rusqlite::params![*zi as i64, *tx as i64, *ty as i64, blob])?;
+            }
+            zooms_meta.push(serde_json::json!({
+                "z": zi, "ppu": ppu, "px": [w, h], "tiles": [nx, ny],
+                "extent": [bbox.0, bbox.1, bbox.2, bbox.3],
+            }));
+        }
     }
+    tx_db.commit()?;
 
-    let meta = [
+    let mut meta = vec![
         ("name".to_string(), z.name.to_string()),
         // Which build produced this map. Lets a later version tell that a
         // container predates a rendering change without re-reading its tiles.
@@ -170,6 +336,14 @@ pub fn build(
         ("extent".to_string(), serde_json::to_string(&[bbox.0, bbox.1, bbox.2, bbox.3])?),
         ("zooms".to_string(), serde_json::to_string(&zooms_meta)?),
     ];
+    match style {
+        Style::Floor(i, name) => {
+            meta.push(("floor".to_string(), (i + 1).to_string()));
+            meta.push(("floor_name".to_string(), name.to_string()));
+        }
+        Style::Painted => meta.push(("style".to_string(), "painted".to_string())),
+        Style::Ink => {}
+    }
     for (k, v) in meta {
         db.execute("INSERT OR REPLACE INTO metadata VALUES (?,?)", rusqlite::params![k, v])?;
     }
@@ -181,10 +355,21 @@ pub fn build(
 }
 
 /// Everything needed to build one zone, read from its bundle.
-pub fn load_zone(
-    env: &super::bundle::Env,
-    group: &super::zones::Group,
-) -> (Vec<Tri>, Option<f32>, BTreeMap<String, Vec<(f64, f64)>>) {
+pub struct LoadedZone {
+    /// Walkable triangles, clipped to `bbox`.
+    pub tris: Vec<Tri>,
+    pub sea: Option<f32>,
+    pub props: BTreeMap<String, Vec<(f64, f64)>>,
+    /// The play area to frame the map on; see [`super::bounds`].
+    pub bbox: raster::Bbox,
+    /// How the play area was found: "boundary", "walkable" or "all".
+    pub bounds: &'static str,
+    /// Every prop, unthinned: the painted style draws each palm.
+    pub all_props: BTreeMap<String, Vec<(f64, f64)>>,
+}
+
+pub fn load_zone(env: &super::bundle::Env, shared: &super::bundle::Shared,
+                 group: &super::zones::Group) -> LoadedZone {
     let idx = env.scene_index();
     let mut files: Vec<usize> = Vec::new();
     for path in group.scenes() {
@@ -196,11 +381,31 @@ pub fn load_zone(
     }
     files.sort_unstable();
     files.dedup();
-    let floors = super::extract::extract_floors(env, &files);
+    let floors = { let _t = super::Timer::start("load: extract");
+        super::extract::extract_floors(env, shared, &files) };
+    let _t = super::Timer::start("load: scene, bounds");
     let sea = scene::find_sea_level(env, &files);
-    let props = scene::scene_props(env, &files)
-        .into_iter()
-        .map(|(k, v)| (k, scene::thin(&v, 55.0)))
+    let all_props = scene::scene_props(env, &files);
+    let props = all_props.iter()
+        .map(|(k, v)| (k.clone(), scene::thin(v, 55.0)))
         .collect();
-    (floors.tris, sea, props)
+    if floors.tris.is_empty() {
+        return LoadedZone { tris: floors.tris, sea, props, bbox: (0.0, 0.0, 0.0, 0.0), bounds: "all",
+                            all_props };
+    }
+    let lm = super::extract::landmarks(env, &files);
+    let tris = super::bounds::drop_strays(&floors.tris, &lm.objects);
+    let tris = super::bounds::drop_sky_planes(&tris, raster::auto_bbox(&tris));
+    let full = raster::auto_bbox(&tris);
+    let (tris, bbox, bounds) = match super::bounds::play_region(&tris, &floors.walls, &floors.blocks,
+                                                         &lm, sea, full) {
+        Some(r) => {
+            let b = r.bbox();
+            let clipped = super::bounds::clip_region(&tris, &r);
+            // The frame is the region, but never wider than the geometry.
+            (clipped, (b.0.max(full.0), b.1.min(full.1), b.2.max(full.2), b.3.min(full.3)), r.method)
+        }
+        None => (tris, full, "all"),
+    };
+    LoadedZone { tris, sea, props, bbox, bounds, all_props }
 }

@@ -89,72 +89,109 @@ pub fn global_band_edges(tris: &[Tri], bands: usize) -> Vec<f32> {
 /// sampling, which is what makes a high pixels-per-unit affordable and is how
 /// tiles are cut.
 pub fn rasterize(tris: &[Tri], ppu: f64, bbox: Bbox) -> Grid {
-    let (minx, maxx, minz, maxz) = bbox;
-    let w = (((maxx - minx) * ppu) as usize) + 1;
-    let h = (((maxz - minz) * ppu) as usize) + 1;
+    let (w, h) = raster_size(ppu, bbox);
     let mut buf = Grid::new(w, h, f32::NEG_INFINITY);
+    for_each_sample(tris, ppu, bbox, |i, y| {
+        if y > buf.v[i] { buf.v[i] = y }
+    });
+    finish(buf)
+}
 
-    for t in tris {
-        // Cheap reject before any sampling work.
-        let (tx0, tx1) = (
-            t[0][0].min(t[1][0]).min(t[2][0]) as f64,
-            t[0][0].max(t[1][0]).max(t[2][0]) as f64,
-        );
-        let (tz0, tz1) = (
-            t[0][2].min(t[1][2]).min(t[2][2]) as f64,
-            t[0][2].max(t[1][2]).max(t[2][2]) as f64,
-        );
-        if tx1 < minx || tx0 > maxx || tz1 < minz || tz0 > maxz {
-            continue;
+/// A floor plan of a slab of a multi-storey zone: the LOWEST surface in each
+/// pixel, so a room shows rather than the roof over it -- unless something
+/// lies more than `over` above that surface, which is a bridge or walkway
+/// across open space and is drawn instead.
+///
+/// Roofs sit a room's height over their floor (4-14 units in Blind Midden)
+/// while bridges cross halls (~30), so one threshold tells them apart.
+/// Samples within `same` of the lowest are the same surface, bumps and all.
+pub fn rasterize_floor(tris: &[Tri], ppu: f64, bbox: Bbox, same: f32, over: f32) -> Grid {
+    let (w, h) = raster_size(ppu, bbox);
+    let mut low = vec![f32::INFINITY; w * h];
+    for_each_sample(tris, ppu, bbox, |i, y| {
+        if y < low[i] { low[i] = y }
+    });
+    let mut floor = Grid::new(w, h, f32::NEG_INFINITY);
+    let mut high = vec![f32::NEG_INFINITY; w * h];
+    for_each_sample(tris, ppu, bbox, |i, y| {
+        if y <= low[i] + same {
+            if y > floor.v[i] { floor.v[i] = y }
+        } else if y >= low[i] + over && y > high[i] {
+            high[i] = y;
         }
-
-        let px: [f64; 3] = [
-            (t[0][0] as f64 - minx) * ppu,
-            (t[1][0] as f64 - minx) * ppu,
-            (t[2][0] as f64 - minx) * ppu,
-        ];
-        let pz: [f64; 3] = [
-            (t[0][2] as f64 - minz) * ppu,
-            (t[1][2] as f64 - minz) * ppu,
-            (t[2][2] as f64 - minz) * ppu,
-        ];
-        let area = 0.5
-            * ((px[1] - px[0]) * (pz[2] - pz[0]) - (px[2] - px[0]) * (pz[1] - pz[0])).abs();
-        // ~2 samples per covered pixel is plenty. A fixed higher factor just
-        // multiplies the work without resolving anything finer.
-        let n = ((area * 2.0) as i64 + 4).clamp(4, 40_000) as usize;
-
-        for k in 0..n {
-            // Stratified in u, golden-ratio sequence in v: an even, low
-            // discrepancy spread without needing a random source.
-            let mut u = (k as f64 + 0.5) / n as f64;
-            let mut v = (k as f64 * 0.618_033_988_749_894_9) % 1.0;
-            if u + v > 1.0 {
-                u = 1.0 - u;
-                v = 1.0 - v;
-            }
-            let x = px[0] + u * (px[1] - px[0]) + v * (px[2] - px[0]);
-            let z = pz[0] + u * (pz[1] - pz[0]) + v * (pz[2] - pz[0]);
-            if x < 0.0 || z < 0.0 {
-                continue;
-            }
-            let (xi, zi) = (x as usize, z as usize);
-            if xi >= w || zi >= h {
-                continue;
-            }
-            let y = t[0][1] as f64
-                + u * (t[1][1] - t[0][1]) as f64
-                + v * (t[2][1] - t[0][1]) as f64;
-            let slot = &mut buf.v[zi * w + xi];
-            if (y as f32) > *slot {
-                *slot = y as f32;
-            }
-        }
+    });
+    for (f, hi) in floor.v.iter_mut().zip(high) {
+        if hi.is_finite() { *f = hi }
     }
+    finish(floor)
+}
+
+pub(crate) fn raster_size(ppu: f64, bbox: Bbox) -> (usize, usize) {
+    let (minx, maxx, minz, maxz) = bbox;
+    ((((maxx - minx) * ppu) as usize) + 1, (((maxz - minz) * ppu) as usize) + 1)
+}
+
+fn finish(mut buf: Grid) -> Grid {
     for t in &mut buf.v {
         if !t.is_finite() {
             *t = f32::NAN;
         }
     }
     buf
+}
+
+/// Visit every pixel each triangle covers, as (pixel index, height there).
+///
+/// Exact coverage: every pixel whose centre lies inside the triangle, with
+/// the height interpolated at that centre. This replaced random-ish point
+/// sampling, which capped big triangles at 40,000 samples and so left holes
+/// in them at fine zoom -- the surface below showed through the holes as a
+/// regular dot pattern over whole regions. A triangle too small to cover any
+/// pixel centre still marks the pixel holding its centroid, so thin
+/// geometry (a plank, a ledge) is not lost.
+pub(crate) fn for_each_sample(tris: &[Tri], ppu: f64, bbox: Bbox, mut f: impl FnMut(usize, f32)) {
+    let (minx, maxx, minz, maxz) = bbox;
+    let (w, h) = raster_size(ppu, bbox);
+    let (wf, hf) = (w as f64, h as f64);
+
+    for t in tris {
+        // Pixel space: x right, z "up" in rows (row 0 = south).
+        let p: [(f64, f64, f64); 3] = [0, 1, 2].map(|k| (
+            (t[k][0] as f64 - minx) * ppu,
+            (t[k][2] as f64 - minz) * ppu,
+            t[k][1] as f64,
+        ));
+        let (x0, x1) = (p[0].0.min(p[1].0).min(p[2].0), p[0].0.max(p[1].0).max(p[2].0));
+        let (z0, z1) = (p[0].1.min(p[1].1).min(p[2].1), p[0].1.max(p[1].1).max(p[2].1));
+        if x1 < 0.0 || z1 < 0.0 || x0 >= wf || z0 >= hf { continue }
+        let _ = (maxx, maxz);
+
+        let area = (p[1].0 - p[0].0) * (p[2].1 - p[0].1) - (p[2].0 - p[0].0) * (p[1].1 - p[0].1);
+        let mut hit = false;
+        if area.abs() > 1e-12 {
+            let inv = 1.0 / area;
+            let (cx0, cx1) = (((x0 - 0.5).ceil().max(0.0)) as usize, ((x1 - 0.5).floor().min(wf - 1.0)) as i64);
+            let (cz0, cz1) = (((z0 - 0.5).ceil().max(0.0)) as usize, ((z1 - 0.5).floor().min(hf - 1.0)) as i64);
+            for cz in cz0 as i64..=cz1 {
+                let pz = cz as f64 + 0.5;
+                for cx in cx0 as i64..=cx1 {
+                    let px = cx as f64 + 0.5;
+                    let l1 = ((px - p[0].0) * (p[2].1 - p[0].1) - (p[2].0 - p[0].0) * (pz - p[0].1)) * inv;
+                    let l2 = ((p[1].0 - p[0].0) * (pz - p[0].1) - (px - p[0].0) * (p[1].1 - p[0].1)) * inv;
+                    let l0 = 1.0 - l1 - l2;
+                    // A hair of tolerance so shared edges leave no seam.
+                    if l0 < -1e-9 || l1 < -1e-9 || l2 < -1e-9 { continue }
+                    let y = p[0].2 * l0 + p[1].2 * l1 + p[2].2 * l2;
+                    f(cz as usize * w + cx as usize, y as f32);
+                    hit = true;
+                }
+            }
+        }
+        if !hit {
+            let (cx, cz) = ((p[0].0 + p[1].0 + p[2].0) / 3.0, (p[0].1 + p[1].1 + p[2].1) / 3.0);
+            if cx >= 0.0 && cz >= 0.0 && cx < wf && cz < hf {
+                f(cz as usize * w + cx as usize, ((p[0].2 + p[1].2 + p[2].2) / 3.0) as f32);
+            }
+        }
+    }
 }

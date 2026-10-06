@@ -89,6 +89,10 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
+      # The release text lives in the repo, so each release's notes are an
+      # ordinary edit reviewed with the code they describe.
+      - uses: actions/checkout@v4
+        with: {sparse-checkout: RELEASE_NOTES.md, sparse-checkout-cone-mode: false}
       - uses: actions/download-artifact@v4
         with: {path: artifacts}
       - name: collect and checksum
@@ -103,30 +107,4 @@ jobs:
           # run before anyone can download them.
           draft: true
           generate_release_notes: true
-          body: |
-            A single self-contained executable. No installer, no runtime, and
-            no map data to download &mdash; it builds the maps itself from your
-            own copy of the game.
-
-            **Linux**
-            ```
-            tar xzf mnm-cartographer-*-linux-x86_64.tar.gz
-            ./mnm-cartographer/mnm-cartographer
-            ```
-
-            **Windows** &mdash; unzip and run `mnm-cartographer.exe`.
-            Windows will warn that the publisher is unknown, because the
-            binary is not code-signed: **More info -> Run anyway**.
-
-            On first launch press **Generate maps**. It finds your game
-            install, reads the zones from the game's own files and renders
-            them. Expect a few minutes; maps are written to your user data
-            directory, not next to the executable, and come to about 96 MB.
-
-            Put the executable wherever you like &mdash; it does not need to
-            live in the game folder.
-
-            If something looks wrong, run `mnm-cartographer --check` and
-            include the output in a report.
-
-            Verify a download against `SHA256SUMS.txt`.
+          body_path: RELEASE_NOTES.md

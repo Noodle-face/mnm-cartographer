@@ -111,6 +111,31 @@ impl Env {
         Ok(Self { col, index, by_cab, externals })
     }
 
+    /// The CAB names a file's external table points at that this bundle
+    /// does not hold. A developer aid.
+    pub fn missing_externals(&self, file: usize) -> Vec<(usize, String)> {
+        let sf = &self.col.serialized_files()[file];
+        sf.file.externals.iter().enumerate()
+            .filter(|(i, _)| self.externals[file][*i].is_none())
+            .map(|(i, e)| (i + 1, cab_of(&e.path).to_string()))
+            .collect()
+    }
+
+    /// For a pointer into a file this bundle does not hold, that file's CAB
+    /// name; None for a pointer this bundle can resolve itself.
+    pub fn external_cab(&self, from_file: usize, p: PPtr) -> Option<&str> {
+        if p.file == 0 { return None }
+        let i = p.file as usize - 1;
+        if self.externals.get(from_file)?.get(i)?.is_some() { return None }
+        let e = self.col.serialized_files()[from_file].file.externals.get(i)?;
+        Some(cab_of(&e.path))
+    }
+
+    /// CAB names of every serialized file in this bundle.
+    pub fn cabs(&self) -> Vec<String> {
+        self.by_cab.keys().cloned().collect()
+    }
+
     pub fn file_count(&self) -> usize {
         self.col.serialized_files().len()
     }
@@ -244,4 +269,51 @@ pub fn quat(v: Option<&TypeValue>) -> [f64; 4] {
 fn _assert_env_shareable() {
     fn require<T: Send + Sync>() {}
     require::<Env>();
+}
+
+/// The game's shared asset bundles, for objects a scene points at but does
+/// not carry.
+///
+/// Zone scenes keep most of their meshes elsewhere: Keeper's Bight resolves
+/// 829 of its 9,879 mesh colliders from its own bundle, and the other 5,890
+/// point into duplicateassetisolation, globalprops and globalitems. Without
+/// them a zone renders as scattered fragments of itself.
+#[derive(Default)]
+pub struct Shared {
+    envs: Vec<Env>,
+    by_cab: HashMap<String, (usize, usize)>,
+}
+
+impl Shared {
+    /// Open every asset (non-scene) bundle in `dir`. Ones that fail to open
+    /// are skipped: a missing mesh is a gap in a map, not a failed build.
+    pub fn open(dir: &Path) -> Shared {
+        let mut sh = Shared::default();
+        let Ok(rd) = std::fs::read_dir(dir) else { return sh };
+        let mut paths: Vec<_> = rd.flatten().map(|e| e.path())
+            .filter(|p| {
+                let n = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                n.ends_with(".bundle") && n.contains("_assets_")
+            })
+            .collect();
+        paths.sort();
+        for p in paths {
+            let Ok(env) = Env::open(&p) else { continue };
+            let ei = sh.envs.len();
+            for (cab, &fi) in &env.by_cab {
+                sh.by_cab.insert(cab.clone(), (ei, fi));
+            }
+            sh.envs.push(env);
+        }
+        sh
+    }
+
+    /// The bundle, file and object a pointer names, by the CAB its file is
+    /// called and the object's path id.
+    pub fn find(&self, cab: &str, path_id: i64) -> Option<(&Env, usize, usize)> {
+        let &(ei, fi) = self.by_cab.get(cab)?;
+        let env = &self.envs[ei];
+        let oi = *env.index.get(fi)?.get(&path_id)?;
+        Some((env, fi, oi))
+    }
 }

@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
-use rayon::prelude::*;
 use std::time::Instant;
 
 #[derive(Clone, Debug)]
@@ -61,6 +60,19 @@ impl Job {
         only: Option<std::collections::HashSet<String>>,
         force: bool,
     ) -> Job {
+        Self::start_with(install, out_dir, only, force, false)
+    }
+
+    /// As [`Job::start`]; `floors_only` rebuilds just the chosen floors of
+    /// each zone and leaves its top-level map as it is.
+    pub fn start_with(
+        install: PathBuf,
+        out_dir: PathBuf,
+        only: Option<std::collections::HashSet<String>>,
+        force: bool,
+        floors_only: bool,
+    ) -> Job {
+        let floors_off = Settings::load().floors_off;
         let (tx, rx) = channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let c = cancel.clone();
@@ -81,104 +93,67 @@ impl Job {
                 return;
             }
             let total = located.len();
+            // Skip zones already built before anything opens their bundle --
+            // a resumed run should not load a 2 GB file to find nothing to do.
+            let todo: Vec<_> = located.into_iter()
+                .filter(|l| !floors_only || !super::floors::plan(&l.zone).is_empty())
+                .filter(|l| force || !out_dir.join(format!("{}.mbtiles", zones::slug(&l.zone))).exists())
+                .collect();
+            let completed = std::sync::atomic::AtomicUsize::new(total - todo.len());
+            let results: Vec<(usize, u64, Option<String>)> = run_zones(
+                todo, zone_concurrency(), &install, &out_dir, &c,
+                |env, shared, l| {
+                    let seen = completed.load(Ordering::Relaxed);
+                    let _ = tx.send(Stage::Zone {
+                        done: seen, total, name: l.zone.clone(), level: 0, levels: 4,
+                    });
+                    let out = out_dir.join(format!("{}.mbtiles", zones::slug(&l.zone)));
+                    let tiles::LoadedZone { tris, sea, props, bbox, .. } =
+                        tiles::load_zone(env, shared, &l.group);
+                    if tris.is_empty() {
+                        completed.fetch_add(1, Ordering::Relaxed);
+                        return (0, 0, Some(format!("{}: no walkable geometry", l.zone)));
+                    }
+                    let name = l.zone.clone();
+                    let txl = tx.clone();
+                    let tset = tiles::Settings {
+                        skip_floors: floors_off.get(&l.zone).cloned().unwrap_or_default(),
+                        floors_only,
+                        ..tiles::Settings::default()
+                    };
+                    let res = tiles::build_zone(
+                        &out,
+                        &tiles::ZoneInput {
+                            name: &name, tris: &tris, sea, props: &props, bbox: Some(bbox),
+                        },
+                        &tset,
+                        |level, levels| {
+                            let seen = completed.load(Ordering::Relaxed);
+                            let _ = txl.send(Stage::Zone {
+                                done: seen, total, name: name.clone(), level, levels,
+                            });
+                        },
+                    );
+                    completed.fetch_add(1, Ordering::Relaxed);
+                    match res {
+                        Ok((n, b)) => (n, b, None),
+                        Err(e) => (0, 0, Some(format!("{}: {e}", l.zone))),
+                    }
+                },
+                |l, msg| {
+                    completed.fetch_add(1, Ordering::Relaxed);
+                    (0, 0, Some(format!("{}: {msg}", l.zone)))
+                },
+            );
+            if c.load(Ordering::Relaxed) { return }
             let (mut tiles_n, mut bytes_n) = (0usize, 0u64);
             let mut failed: Vec<String> = Vec::new();
-            // Group by bundle so each 2 GB file is opened once, not per zone.
-            let mut by_bundle: std::collections::BTreeMap<PathBuf, Vec<zones::Located>> =
-                Default::default();
-            for l in located {
-                by_bundle.entry(l.bundle.clone()).or_default().push(l);
+            for (n, b, err) in results {
+                tiles_n += n;
+                bytes_n += b;
+                if let Some(e) = err { failed.push(e) }
             }
-            let pool = rayon::ThreadPoolBuilder::new()
-                .num_threads(zone_concurrency())
-                .build();
-            let Ok(pool) = pool else {
-                send(Stage::Failed("could not start worker threads".into()));
-                return;
-            };
-            let mut done = 0usize;
-            for (bundle, group) in by_bundle {
-                if c.load(Ordering::Relaxed) {
-                    return;
-                }
-                // Skip zones that are already built before paying to open the
-                // bundle -- a resumed run should not reload a 2 GB file to find
-                // there is nothing left to do in it.
-                let total_in_group = group.len();
-                let group: Vec<_> = group
-                    .into_iter()
-                    .filter(|l| {
-                        force
-                            || !out_dir
-                                .join(format!("{}.mbtiles", zones::slug(&l.zone)))
-                                .exists()
-                    })
-                    .collect();
-                done += total_in_group - group.len();
-                if group.is_empty() {
-                    continue;
-                }
-                let env = match super::bundle::Env::open(&bundle) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        for l in &group {
-                            failed.push(format!("{}: {e}", l.zone));
-                        }
-                        done += group.len();
-                        continue;
-                    }
-                };
-                let base_done = done;
-                let completed = std::sync::atomic::AtomicUsize::new(base_done);
-                let results: Vec<(usize, u64, Option<String>)> = pool.install(|| {
-                    group
-                        .par_iter()
-                        .map(|l| {
-                            if c.load(Ordering::Relaxed) {
-                                return (0, 0, None);
-                            }
-                            let seen = completed.load(Ordering::Relaxed);
-                            let _ = tx.send(Stage::Zone {
-                                done: seen, total, name: l.zone.clone(), level: 0, levels: 4,
-                            });
-                            let out = out_dir.join(format!("{}.mbtiles", zones::slug(&l.zone)));
-                            let (tris, sea, props) = tiles::load_zone(&env, &l.group);
-                            if tris.is_empty() {
-                                completed.fetch_add(1, Ordering::Relaxed);
-                                return (0, 0, Some(format!("{}: no walkable geometry", l.zone)));
-                            }
-                            let name = l.zone.clone();
-                            let txl = tx.clone();
-                            let res = tiles::build(
-                                &out,
-                                &tiles::ZoneInput {
-                                    name: &name, tris: &tris, sea, props: &props,
-                                },
-                                &tiles::Settings::default(),
-                                |level, levels| {
-                                    let seen = completed.load(Ordering::Relaxed);
-                                    let _ = txl.send(Stage::Zone {
-                                        done: seen, total, name: name.clone(), level, levels,
-                                    });
-                                },
-                            );
-                            completed.fetch_add(1, Ordering::Relaxed);
-                            match res {
-                                Ok((n, b)) => (n, b, None),
-                                Err(e) => (0, 0, Some(format!("{}: {e}", l.zone))),
-                            }
-                        })
-                        .collect()
-                });
-                for (n, b, err) in results {
-                    tiles_n += n;
-                    bytes_n += b;
-                    if let Some(e) = err {
-                        failed.push(e);
-                    }
-                }
-                done = completed.load(Ordering::Relaxed);
-            }
+            let done = completed.load(Ordering::Relaxed);
             send(Stage::Finished { zones: done, tiles: tiles_n, bytes: bytes_n, failed });
         });
         Job {
@@ -263,13 +238,47 @@ impl Job {
 
 /// How many zones to build at once.
 ///
-/// Each zone in flight holds its rasters, masks and the finished sheet -- about
-/// a gigabyte at the finest level for a large zone -- so this is bounded by
-/// memory rather than cores. The remaining threads are not idle: the elevation
-/// bands inside a zone run in parallel too.
+/// Bounded by memory, not cores: a zone in flight renders all its zoom
+/// levels -- and its floors -- side by side, and the largest peak around
+/// 6 GB that way. The work inside each zone already spreads over every core,
+/// so more lanes than memory allows would only trade speed for swapping.
 pub fn zone_concurrency() -> usize {
+    const PER_LANE_GB: f64 = 6.0;
     let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
-    (cores / 2).clamp(2, 6)
+    let by_cores = (cores / 2).clamp(1, 6);
+    match available_memory_gb() {
+        Some(gb) => ((gb / PER_LANE_GB) as usize).clamp(1, by_cores),
+        // Unknown: assume a modest machine.
+        None => by_cores.min(2),
+    }
+}
+
+/// Memory free for use, in GB, if the platform says.
+fn available_memory_gb() -> Option<f64> {
+    #[cfg(target_os = "linux")]
+    {
+        let t = std::fs::read_to_string("/proc/meminfo").ok()?;
+        let kb: f64 = t.lines().find(|l| l.starts_with("MemAvailable:"))?
+            .split_whitespace().nth(1)?.parse().ok()?;
+        Some(kb / 1024.0 / 1024.0)
+    }
+    #[cfg(windows)]
+    {
+        #[repr(C)]
+        struct MemoryStatusEx {
+            length: u32, memory_load: u32, total_phys: u64, avail_phys: u64,
+            total_page_file: u64, avail_page_file: u64, total_virtual: u64,
+            avail_virtual: u64, avail_extended_virtual: u64,
+        }
+        #[link(name = "kernel32")]
+        extern "system" { fn GlobalMemoryStatusEx(buf: *mut MemoryStatusEx) -> i32; }
+        let mut m: MemoryStatusEx = unsafe { std::mem::zeroed() };
+        m.length = std::mem::size_of::<MemoryStatusEx>() as u32;
+        if unsafe { GlobalMemoryStatusEx(&mut m) } == 0 { return None }
+        Some(m.avail_phys as f64 / 1024.0 / 1024.0 / 1024.0)
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    { None }
 }
 
 /// Where generated maps live. Chosen so the viewer's normal search finds them.
@@ -301,6 +310,15 @@ pub struct Settings {
     /// Window size in logical points.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<(f32, f32)>,
+    /// Map rotation per zone, in degrees clockwise. A zone left north-up has
+    /// no entry.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub rotations: std::collections::BTreeMap<String, f32>,
+    /// Per zone, the floors (numbered from 1, lowest first) NOT to build.
+    /// Floors take as long as their zone each, so skipping unwanted ones
+    /// is most of what a multi-storey zone costs.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub floors_off: std::collections::BTreeMap<String, Vec<usize>>,
 }
 
 impl Settings {
@@ -341,4 +359,143 @@ pub fn resolve_install(chosen: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Paint one zone into the frame of the map it already has, on a worker
+/// thread. The result is the path written, or what went wrong. A debug aid:
+/// the painted style is an experiment, built on demand for the zone open.
+pub struct PaintJob {
+    pub zone: String,
+    pub started: Instant,
+    rx: Receiver<Result<PathBuf, String>>,
+    progress: Arc<std::sync::Mutex<String>>,
+}
+
+pub struct PaintFrame {
+    pub extent: [f64; 4],
+    pub base_ppu: f64,
+    pub zooms: usize,
+}
+
+impl PaintJob {
+    pub fn start(install: PathBuf, zone: String, out: PathBuf, frame: PaintFrame) -> PaintJob {
+        let (tx, rx) = channel();
+        let progress = Arc::new(std::sync::Mutex::new("finding the zone".to_string()));
+        let prog = progress.clone();
+        let z = zone.clone();
+        std::thread::spawn(move || {
+            let say = |s: &str| { if let Ok(mut p) = prog.lock() { *p = s.to_string() } };
+            let res = (|| -> Result<PathBuf, String> {
+                let located = zones::survey_cached(&install, |_, _, _| {});
+                let l = located.into_iter().find(|l| l.zone == z)
+                    .ok_or_else(|| format!("{z} is not in this install"))?;
+                say("reading the game files");
+                let env = super::bundle::Env::open(&l.bundle).map_err(|e| e.to_string())?;
+                let shared = super::bundle::Shared::open(&install);
+                let lz = tiles::load_zone(&env, &shared, &l.group);
+                if lz.tris.is_empty() { return Err("no walkable geometry".into()) }
+                let [ax, bx, az, bz] = frame.extent;
+                let mut level = |done: usize, total: usize| say(&format!("painting level {done}/{total}"));
+                say(&format!("painting level 0/{}", frame.zooms));
+                tiles::build_painted(&out,
+                    &tiles::ZoneInput { name: &z, tris: &lz.tris, sea: lz.sea,
+                                        props: &lz.all_props, bbox: None },
+                    ((ax, bx, az, bz), frame.base_ppu), frame.zooms, &mut level)
+                    .map_err(|e| e.to_string())?;
+                Ok(out)
+            })();
+            let _ = tx.send(res);
+        });
+        PaintJob { zone, started: Instant::now(), rx, progress }
+    }
+
+    /// The outcome once finished; None while still running.
+    pub fn poll(&self) -> Option<Result<PathBuf, String>> {
+        match self.rx.try_recv() {
+            Ok(r) => Some(r),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(_) => Some(Err("the painting thread stopped".into())),
+        }
+    }
+
+    pub fn progress(&self) -> String {
+        self.progress.lock().map(|p| p.clone()).unwrap_or_default()
+    }
+}
+
+/// Run `work` on every zone in `zones`, `lanes` at a time, from one queue.
+///
+/// Two things this does that a per-bundle loop did not:
+///
+/// - **No bundle barrier.** Zones of the next bundle start as soon as a lane
+///   frees, instead of waiting for the slowest zone of the current one; a
+///   bundle is opened when its first zone is reached and dropped once its
+///   last finishes, so only about two are ever open.
+/// - **All cores.** Lanes are plain threads; the parallel work inside each
+///   zone runs on the global thread pool. Running the zones themselves on a
+///   pool of `lanes` threads confined that inner work to those threads too,
+///   which kept a full build at 4 of 16 cores busy.
+///
+/// Within a bundle the costliest zones go first, so the run does not end on
+/// one long zone with every other lane idle. Cost is guessed from the size
+/// of the map a previous build left, when there is one.
+pub fn run_zones<R: Send>(
+    zones_in: Vec<zones::Located>,
+    lanes: usize,
+    install: &Path,
+    out_dir: &Path,
+    cancel: &AtomicBool,
+    work: impl Fn(&super::bundle::Env, &super::bundle::Shared, &zones::Located) -> R + Sync,
+    on_open_failed: impl Fn(&zones::Located, &str) -> R + Sync,
+) -> Vec<R> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    if zones_in.is_empty() { return Vec::new() }
+    let cost = |l: &zones::Located| -> u64 {
+        std::fs::metadata(out_dir.join(format!("{}.mbtiles", zones::slug(&l.zone))))
+            .map(|m| m.len()).unwrap_or(0)
+    };
+    let mut order: Vec<(PathBuf, u64, zones::Located)> =
+        zones_in.into_iter().map(|l| (l.bundle.clone(), cost(&l), l)).collect();
+    order.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+    let mut left: HashMap<PathBuf, usize> = HashMap::new();
+    for (b, _, _) in &order { *left.entry(b.clone()).or_default() += 1 }
+
+    struct Slot { env: Option<Arc<Result<super::bundle::Env, String>>>, left: usize }
+    let slots: Mutex<HashMap<PathBuf, Arc<Mutex<Slot>>>> = Mutex::new(
+        left.into_iter().map(|(b, n)| (b, Arc::new(Mutex::new(Slot { env: None, left: n })))).collect());
+    let shared = super::bundle::Shared::open(install);
+    let queue: Mutex<std::collections::VecDeque<(usize, zones::Located)>> =
+        Mutex::new(order.into_iter().map(|(_, _, l)| l).enumerate().collect());
+    let results: Mutex<Vec<(usize, R)>> = Mutex::new(Vec::new());
+
+    std::thread::scope(|s| {
+        for _ in 0..lanes.max(1) {
+            s.spawn(|| loop {
+                if cancel.load(Ordering::Relaxed) { return }
+                let Some((i, l)) = queue.lock().unwrap().pop_front() else { return };
+                let slot = slots.lock().unwrap()[&l.bundle].clone();
+                // Open the bundle once; a lane arriving meanwhile waits here.
+                let env = {
+                    let mut sl = slot.lock().unwrap();
+                    sl.env.get_or_insert_with(|| Arc::new(
+                        super::bundle::Env::open(&l.bundle).map_err(|e| e.to_string()))).clone()
+                };
+                let r = match env.as_ref() {
+                    Ok(e) => work(e, &shared, &l),
+                    Err(msg) => on_open_failed(&l, msg),
+                };
+                drop(env);
+                {
+                    let mut sl = slot.lock().unwrap();
+                    sl.left -= 1;
+                    if sl.left == 0 { sl.env = None } // last zone of this bundle
+                }
+                results.lock().unwrap().push((i, r));
+            });
+        }
+    });
+    let mut r = results.into_inner().unwrap();
+    r.sort_by_key(|(i, _)| *i);
+    r.into_iter().map(|(_, r)| r).collect()
 }

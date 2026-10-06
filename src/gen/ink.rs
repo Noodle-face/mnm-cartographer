@@ -109,7 +109,6 @@ pub fn render(height: &Grid, edges: &[f32], o: &InkOptions) -> Rendered {
     // informative at this scale.
     let _t1 = super::Timer::start("  land_s");
     let land_s = drop_small(&soften(&a.land, 1.2), ((90.0 * ppu * ppu) as usize).max(120));
-
     // Water is simply floor below the ocean surface: zones place their water
     // objects at sea level, so the coastline is a height threshold rather than
     // a separate mesh to find.

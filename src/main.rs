@@ -152,6 +152,16 @@ struct App {
     base: PathBuf,
     maps: Vec<Pyramid>,
     cur: usize,
+    /// The current zone's floor maps, lowest first; empty for most zones.
+    floors: Vec<Pyramid>,
+    /// Which floor is shown, or None for the top-level map.
+    floor: Option<usize>,
+    /// The current zone's painted map, if one has been made, and whether it
+    /// is the one on screen. An experiment; see gen::paint.
+    painted: Option<Pyramid>,
+    show_painted: bool,
+    paint_job: Option<gen::job::PaintJob>,
+    paint_note: String,
     mset: MarkerSet,
     graph: connections::Graph,
     watcher: watch::ZoneWatcher,
@@ -161,6 +171,11 @@ struct App {
     scale: f32,
     /// screen position of world origin
     offset: egui::Vec2,
+    /// Clockwise rotation of the map on screen, radians. Applied after scale,
+    /// about the world origin, so `offset` still places the origin.
+    rot: f32,
+    /// A middle-drag or compass drag is turning the map.
+    rotating: bool,
     textures: HashMap<(i64, i64, i64), egui::TextureHandle>,
     fitted: bool,
     editing: Option<Editing>,
@@ -233,14 +248,20 @@ impl App {
                     .flatten()
             })
             .unwrap_or(0);
+        let rot = maps.get(cur)
+            .and_then(|p| settings.rotations.get(&p.name))
+            .map_or(0.0, |d| d.to_radians());
         let mset = maps
             .get(cur)
             .map(|p| MarkerSet::load(&p.markers_path(&base)))
             .unwrap_or_else(|| MarkerSet::empty(base.join("markers/none.json")));
+        let floors = maps.get(cur).map(|p| pyramid::floors_of(&p.path)).unwrap_or_default();
+        let painted = maps.get(cur).and_then(|p| pyramid::painted_of(&p.path));
         Self {
-            base, maps, cur, mset, graph, watcher,
+            base, maps, cur, floors, floor: None, mset, graph, watcher,
+            painted, show_painted: false, paint_job: None, paint_note: String::new(),
             follow: true, show_legend: true,
-            scale: 1.0, offset: egui::Vec2::ZERO,
+            scale: 1.0, offset: egui::Vec2::ZERO, rot, rotating: false,
             textures: HashMap::new(), fitted: false,
             editing: None, status: String::new(), last_poll: 0.0,
             paper: None,
@@ -281,6 +302,11 @@ impl App {
         if let Some(p) = self.maps.get(self.cur) {
             self.mset = MarkerSet::load(&p.markers_path(&self.base));
         }
+        self.floors = self.maps.get(self.cur)
+            .map(|p| pyramid::floors_of(&p.path)).unwrap_or_default();
+        self.floor = None;
+        self.painted = self.maps.get(self.cur).and_then(|p| pyramid::painted_of(&p.path));
+        self.show_painted = false;
     }
 
     /// Re-read which zones exist and which are already built.
@@ -624,6 +650,32 @@ impl App {
                                     self.zone_picked.remove(&z.name);
                                 }
                             }
+                            // Floors, for a zone built on top of itself. Each
+                            // costs about as much as the zone, so they can be
+                            // left out one by one.
+                            let plan = gen::floors::plan(&z.name);
+                            if !plan.is_empty() {
+                                ui.indent(("floors", &z.name), |ui| {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label(egui::RichText::new("floors").small().weak());
+                                        for (k, f) in plan.iter().enumerate() {
+                                            let n = k + 1;
+                                            let off = self.settings.floors_off
+                                                .get(&z.name).is_some_and(|v| v.contains(&n));
+                                            let mut want = !off;
+                                            if ui.checkbox(&mut want, egui::RichText::new(
+                                                format!("{n} {}", f.name)).small()).changed()
+                                            {
+                                                let v = self.settings.floors_off
+                                                    .entry(z.name.clone()).or_default();
+                                                if want { v.retain(|x| *x != n) } else { v.push(n) }
+                                                if v.is_empty() { self.settings.floors_off.remove(&z.name); }
+                                                self.settings.save();
+                                            }
+                                        }
+                                    });
+                                });
+                            }
                         }
                     });
                 }
@@ -641,6 +693,20 @@ impl App {
                             // Explicitly chosen zones are rebuilt even if present.
                             self.gen_job = Some(gen::job::Job::start(
                                 install, out, Some(self.zone_picked.clone()), true));
+                        }
+                    }
+                    let with_floors = self.zone_picked.iter()
+                        .filter(|z| !gen::floors::plan(z).is_empty()).count();
+                    if ui.add_enabled(found.is_some() && !busy && with_floors > 0,
+                        egui::Button::new(format!("Floors only ({with_floors})")))
+                        .on_hover_text("Rebuild just the ticked floors of the selected zones, \
+                                        keeping their top-level maps")
+                        .clicked()
+                    {
+                        if let Some(install) = found.clone() {
+                            let out = gen::job::maps_dir();
+                            self.gen_job = Some(gen::job::Job::start_with(
+                                install, out, Some(self.zone_picked.clone()), true, true));
                         }
                     }
                     let live = self.watcher.zone.clone();
@@ -813,6 +879,69 @@ impl App {
 
     fn pyr(&self) -> Option<&Pyramid> { self.maps.get(self.cur) }
 
+    /// The pyramid whose tiles are on screen: the chosen floor, or the zone's
+    /// top-level map. Floors share the zone's frame exactly, so everything
+    /// else -- extent, zoom levels, markers -- still comes from `pyr`.
+    fn view_pyr(&self) -> Option<&Pyramid> {
+        match self.floor {
+            Some(i) => self.floors.get(i),
+            None if self.show_painted && self.painted.is_some() => self.painted.as_ref(),
+            None => self.pyr(),
+        }
+    }
+
+    /// Start painting the open zone in the background.
+    fn start_paint(&mut self) {
+        let Some(p) = self.pyr() else { return };
+        let Some(install) = self.settings.resolve() else {
+            self.paint_note = "Game install not found \u{2014} set it in Maps\u{2026}".into();
+            return;
+        };
+        let frame = gen::job::PaintFrame {
+            extent: p.extent,
+            base_ppu: p.levels.first().map_or(1.0, |l| l.ppu),
+            zooms: p.levels.len(),
+        };
+        let out = pyramid::painted_path(&p.path);
+        let name = p.name.clone();
+        // A rebuild replaces the file; let go of the old one first.
+        self.painted = None;
+        self.show_painted = false;
+        self.textures.clear();
+        self.paint_note.clear();
+        self.paint_job = Some(gen::job::PaintJob::start(install, name, out, frame));
+    }
+
+    /// Pick up a finished paint job.
+    fn poll_paint(&mut self, ctx: &egui::Context) {
+        let Some(job) = &self.paint_job else { return };
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        let Some(res) = job.poll() else { return };
+        let zone = job.zone.clone();
+        let secs = job.started.elapsed().as_secs_f32();
+        self.paint_job = None;
+        match res {
+            Ok(path) => {
+                // Only show it if the zone is still the one open.
+                if self.pyr().is_some_and(|p| p.name == zone) {
+                    self.painted = Pyramid::open(&path).ok();
+                    self.show_painted = self.painted.is_some();
+                    self.textures.clear();
+                }
+                self.paint_note = format!("painted {} in {secs:.0}s", self.graph.pretty(&zone));
+            }
+            Err(e) => self.paint_note = format!("painting failed: {e}"),
+        }
+    }
+
+    fn set_floor(&mut self, floor: Option<usize>) {
+        if floor == self.floor { return }
+        self.floor = floor;
+        // Tiles are cached by position only, and every floor has the same
+        // positions.
+        self.textures.clear();
+    }
+
     fn open_zone(&mut self, i: usize) {
         if i >= self.maps.len() || i == self.cur && self.fitted { return }
         self.cur = i;
@@ -822,54 +951,107 @@ impl App {
         }
         self.textures.clear();
         self.fitted = false;
+        self.floors = pyramid::floors_of(&self.maps[i].path);
+        self.floor = None;
+        self.painted = pyramid::painted_of(&self.maps[i].path);
+        self.show_painted = false;
+        self.rot = self.settings.rotations.get(&self.maps[i].name)
+            .map_or(0.0, |d| d.to_radians());
         let p = &self.maps[self.cur];
         self.mset = MarkerSet::load(&p.markers_path(&self.base));
     }
 
+    /// Turn a scene-space vector by the view rotation.
+    fn rotv(&self, v: egui::Vec2) -> egui::Vec2 {
+        let (s, c) = self.rot.sin_cos();
+        egui::vec2(v.x * c - v.y * s, v.x * s + v.y * c)
+    }
+    fn unrotv(&self, v: egui::Vec2) -> egui::Vec2 {
+        let (s, c) = self.rot.sin_cos();
+        egui::vec2(v.x * c + v.y * s, -v.x * s + v.y * c)
+    }
+    fn scene_to_screen(&self, s: egui::Pos2) -> egui::Pos2 {
+        self.offset.to_pos2() + self.rotv(s.to_vec2() * self.scale)
+    }
     fn world_to_screen(&self, wx: f64, wz: f64) -> egui::Pos2 {
-        let s = world_to_scene(wx, wz);
-        egui::pos2(s.x * self.scale + self.offset.x, s.y * self.scale + self.offset.y)
+        self.scene_to_screen(world_to_scene(wx, wz))
     }
     fn screen_to_world(&self, p: egui::Pos2) -> (f64, f64) {
-        scene_to_world(egui::pos2(
-            (p.x - self.offset.x) / self.scale,
-            (p.y - self.offset.y) / self.scale,
-        ))
+        scene_to_world((self.unrotv(p - self.offset.to_pos2()) / self.scale).to_pos2())
     }
 
     /// Put a world position at the centre of the view, keeping the zoom.
     fn center_on(&mut self, wx: f64, wz: f64, vp: egui::Rect) {
         let s = world_to_scene(wx, wz);
-        self.offset = vp.center().to_vec2()
-            - egui::vec2(s.x * self.scale, s.y * self.scale);
+        self.offset = vp.center().to_vec2() - self.rotv(s.to_vec2() * self.scale);
         self.fitted = true;
         self.clamp(vp);
     }
 
+    /// Size of the map's bounding box on screen at scale 1. Turned, a
+    /// rectangle needs more room than its own width and height.
+    fn turned_size(&self, r: egui::Rect) -> egui::Vec2 {
+        let (s, c) = (self.rot.sin().abs(), self.rot.cos().abs());
+        egui::vec2(r.width() * c + r.height() * s, r.width() * s + r.height() * c)
+    }
+
     fn fit_scale(&self, vp: egui::Rect) -> f32 {
         let Some(p) = self.pyr() else { return 1.0 };
-        let r = p.scene_rect();
-        (vp.width() / r.width()).min(vp.height() / r.height())
+        let sz = self.turned_size(p.scene_rect());
+        (vp.width() / sz.x).min(vp.height() / sz.y)
     }
 
     fn fit(&mut self, vp: egui::Rect) {
         let Some(p) = self.pyr() else { return };
         let r = p.scene_rect();
         self.scale = self.fit_scale(vp);
-        self.offset = vp.center().to_vec2()
-            - egui::vec2(r.center().x * self.scale, r.center().y * self.scale);
+        self.offset = vp.center().to_vec2() - self.rotv(r.center().to_vec2() * self.scale);
         self.fitted = true;
+    }
+
+    /// Turn the map by `da` radians about a screen point, which stays put.
+    /// The scale never changes: turning is turning, not zooming.
+    fn rotate_about(&mut self, da: f32, pivot: egui::Pos2, vp: egui::Rect) {
+        let before = self.screen_to_world(pivot);
+        self.rot = wrap_angle(self.rot + da);
+        let after = self.world_to_screen(before.0, before.1);
+        self.offset += pivot - after;
+        self.clamp(vp);
+    }
+
+    /// How far out the wheel may zoom: whichever is further of fitting the
+    /// map north-up and fitting it as turned now. Taking the north-up fit too
+    /// means turning a fitted map never leaves the view below the floor.
+    fn zoom_floor(&self, vp: egui::Rect) -> f32 {
+        self.north_fit(vp).min(self.fit_scale(vp))
+    }
+
+    /// The scale that fits the map north-up, whatever the rotation.
+    fn north_fit(&self, vp: egui::Rect) -> f32 {
+        let Some(p) = self.pyr() else { return 1.0 };
+        let r = p.scene_rect();
+        (vp.width() / r.width()).min(vp.height() / r.height())
+    }
+
+    /// Remember this zone's rotation for next time.
+    fn save_rotation(&mut self) {
+        let Some(name) = self.pyr().map(|p| p.name.clone()) else { return };
+        let deg = (self.rot.to_degrees() * 10.0).round() / 10.0;
+        if deg == 0.0 { self.settings.rotations.remove(&name); }
+        else { self.settings.rotations.insert(name, deg); }
+        self.settings.save();
     }
 
     /// Keep the map covering the viewport; centre it on an axis that fits.
     /// Keep the sheet in view. Once it is smaller than the viewport it is
-    /// centred rather than pinned to an edge.
+    /// centred rather than pinned to an edge. Turned, the map's bounding box
+    /// is what is kept in view.
     fn clamp(&mut self, vp: egui::Rect) {
         let Some(p) = self.pyr() else { return };
         let r = p.scene_rect();
-        let tl = self.world_to_screen(r.min.x as f64, -(r.min.y as f64));
-        let br = self.world_to_screen(r.max.x as f64, -(r.max.y as f64));
-        let map = egui::Rect::from_two_pos(tl, br);
+        let map = egui::Rect::from_points(
+            &[r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()]
+                .map(|c| self.scene_to_screen(c)));
         let mut d = egui::Vec2::ZERO;
         if map.width() <= vp.width() { d.x = vp.center().x - map.center().x }
         else if map.left() > vp.left() { d.x = vp.left() - map.left() }
@@ -883,7 +1065,7 @@ impl App {
     fn texture(&mut self, ctx: &egui::Context, z: i64, tx: i64, ty: i64) -> Option<egui::TextureHandle> {
         let key = (z, tx, ty);
         if let Some(t) = self.textures.get(&key) { return Some(t.clone()) }
-        let bytes = self.pyr()?.tile_bytes(z, tx, ty)?;
+        let bytes = self.view_pyr()?.tile_bytes(z, tx, ty)?;
         let img = image::load_from_memory(&bytes).ok()?.to_rgba8();
         let (w, h) = img.dimensions();
         let ci = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], img.as_raw());
@@ -891,6 +1073,17 @@ impl App {
         self.textures.insert(key, t.clone());
         Some(t)
     }
+}
+
+/// Mouse turning: radians per pixel of sideways drag, about 0.3 degrees, so
+/// a full turn is a long sweep across a wide window.
+const ROT_PER_PX: f32 = 0.3 * std::f32::consts::PI / 180.0;
+
+/// Angle into (-PI, PI].
+fn wrap_angle(a: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    let a = a.rem_euclid(TAU);
+    if a > PI { a - TAU } else { a }
 }
 
 fn shape_points(shape: Shape, c: egui::Pos2, r: f32) -> Vec<egui::Pos2> {
@@ -989,6 +1182,7 @@ impl eframe::App for App {
             self.status = "undid the last marker edit".into();
         }
 
+        self.poll_paint(ctx);
         self.sidebar(ctx);
         self.map(ctx);
         self.marker_window(ctx);
@@ -1092,6 +1286,35 @@ impl App {
             });
             ui.checkbox(&mut self.follow, "Follow game (tail Player.log)");
             ui.checkbox(&mut self.show_legend, "Legend on map");
+            ui.collapsing("Experimental", |ui| {
+                match &self.paint_job {
+                    Some(job) => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(egui::RichText::new(format!("{} \u{2014} {}s",
+                                job.progress(), job.started.elapsed().as_secs())).size(11.0));
+                        });
+                    }
+                    None => {
+                        let label = if self.painted.is_some() { "Repaint this map" } else { "Paint this map" };
+                        if ui.add_enabled(self.pyr().is_some(), egui::Button::new(label))
+                            .on_hover_text("Render this zone in the painted style from your game \
+                                            files. Takes a minute or so; the inked map stays as it is.")
+                            .clicked()
+                        {
+                            self.start_paint();
+                        }
+                    }
+                }
+                if self.painted.is_some() {
+                    let before = self.show_painted;
+                    ui.checkbox(&mut self.show_painted, "Show painted style");
+                    if before != self.show_painted { self.textures.clear() }
+                }
+                if !self.paint_note.is_empty() {
+                    ui.label(egui::RichText::new(&self.paint_note).size(10.0).weak());
+                }
+            });
             if let Some(p) = &self.watcher.path {
                 ui.add(egui::Label::new(
                     egui::RichText::new(format!("log: {}", p.display())).size(9.0).weak(),
@@ -1104,7 +1327,8 @@ impl App {
             ui.label(egui::RichText::new(
                 "right-click the map to add a marker\n\
                  shift+right-click to copy a location\n\
-                 left-click a marker to open its note",
+                 left-click a marker to open its note\n\
+                 Q / E or middle-drag to turn the map",
             ).size(10.0).weak());
 
             // ---- wiki connections for this zone --------------------------
@@ -1357,6 +1581,37 @@ impl App {
                 if resp.drag_stopped() {
                     if self.dragging.take().is_some() { let _ = self.mset.save(); }
                 }
+                // Middle-drag turns the map about the window centre, by an
+                // even amount per pixel of sideways movement wherever the
+                // pointer is.
+                if resp.dragged_by(egui::PointerButton::Middle) {
+                    let dx = resp.drag_delta().x;
+                    if dx != 0.0 {
+                        self.rotate_about(dx * ROT_PER_PX, vp.center(), vp);
+                        self.rotating = true;
+                    }
+                }
+                if self.rotating && !ctx.input(|i| i.pointer.any_down()) {
+                    self.rotating = false;
+                    self.save_rotation();
+                }
+                // Q / E step a quarter of a right angle and land on a multiple
+                // of it, so a free-hand angle can be squared up again. N is
+                // north up. Not while typing, or a note could not hold a Q.
+                if !ctx.wants_keyboard_input() {
+                    let step = 15.0f32;
+                    let deg = self.rot.to_degrees();
+                    let want = ctx.input(|i| {
+                        if i.key_pressed(egui::Key::E) { Some(((deg / step + 1e-3).floor() + 1.0) * step) }
+                        else if i.key_pressed(egui::Key::Q) { Some(((deg / step - 1e-3).ceil() - 1.0) * step) }
+                        else if i.key_pressed(egui::Key::N) { Some(0.0) }
+                        else { None }
+                    });
+                    if let Some(d) = want {
+                        self.rotate_about(wrap_angle(d.to_radians()) - self.rot, vp.center(), vp);
+                        self.save_rotation();
+                    }
+                }
                 if resp.dragged_by(egui::PointerButton::Primary) {
                     match self.dragging.clone() {
                         Some(id) => {
@@ -1380,7 +1635,7 @@ impl App {
                         // Fit is the hard floor: the whole map, and no further.
                         // The parchment backdrop fills the letterbox bars where
                         // the map's aspect differs from the window's.
-                        let floor = self.fit_scale(vp);
+                        let floor = self.zoom_floor(vp);
                         let top = self.pyr().map(|p| p.levels.last().map(|l| l.ppu).unwrap_or(4.0))
                             .unwrap_or(4.0) as f32 * 4.0;
                         let mut f = (scroll * 0.0025).exp();
@@ -1398,25 +1653,31 @@ impl App {
 
                 // ---- tiles -------------------------------------------------
                 let (lvl_z, want) = {
-                    let p = self.pyr().unwrap();
+                    let p = self.view_pyr().unwrap();
                     let l = p.level_for(self.scale as f64);
-                    let tl = self.screen_to_world(vp.left_top());
-                    let br = self.screen_to_world(vp.right_bottom());
-                    let pad = (br.0 - tl.0).abs() * 0.12;
-                    (l.z, p.tiles_in(l, tl.0 - pad, br.0 + pad, br.1 - pad, tl.1 + pad))
+                    // Turned, the window covers a tilted patch of the world;
+                    // ask for everything in that patch's bounding box.
+                    let cs = [vp.left_top(), vp.right_top(), vp.right_bottom(), vp.left_bottom()]
+                        .map(|c| self.screen_to_world(c));
+                    let (mut x0, mut x1, mut z0, mut z1) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+                    for (x, z) in cs {
+                        x0 = x0.min(x); x1 = x1.max(x); z0 = z0.min(z); z1 = z1.max(z);
+                    }
+                    let pad = (x1 - x0) * 0.12;
+                    (l.z, p.tiles_in(l, x0 - pad, x1 + pad, z0 - pad, z1 + pad))
                 };
-                let base_z = self.pyr().unwrap().levels[0].z;
+                let base_z = self.view_pyr().unwrap().levels[0].z;
                 // keep the coarsest level resident so panning never shows gaps
                 let base_tiles = {
-                    let p = self.pyr().unwrap();
+                    let p = self.view_pyr().unwrap();
                     let l = &p.levels[0];
                     p.tiles_in(l, p.extent[0], p.extent[1], p.extent[2], p.extent[3])
                 };
                 for (z, list) in [(base_z, base_tiles), (lvl_z, want)] {
-                    let lv = self.pyr().unwrap().levels.iter().find(|l| l.z == z).unwrap().clone();
-                    let t = self.pyr().unwrap().tile;
+                    let lv = self.view_pyr().unwrap().levels.iter().find(|l| l.z == z).unwrap().clone();
+                    let t = self.view_pyr().unwrap().tile;
                     for (tx, ty) in list {
-                        let (wx, wz, ww, hh) = self.pyr().unwrap().tile_world_rect(&lv, tx, ty);
+                        let (wx, wz, ww, hh) = self.view_pyr().unwrap().tile_world_rect(&lv, tx, ty);
                         // Edge tiles were padded out to a full tile with paper
                         // colour when the pyramid was cut. That padding lies
                         // OUTSIDE the map and shows as a pale border, so draw
@@ -1433,21 +1694,21 @@ impl App {
                         // below it, and dropping its y bleed reopens that seam.
                         let bx = if short_x { 0.0 } else { 1.0 };
                         let by = if short_y { 0.0 } else { 1.0 };
-                        let a = self.world_to_screen(wx, wz);
-                        let b = self.world_to_screen(
-                            wx + ww * (vw + bx) / tf,
-                            wz - hh * (vh + by) / tf,
-                        );
+                        let (ex, ez) = (wx + ww * (vw + bx) / tf, wz - hh * (vh + by) / tf);
+                        // A quad rather than an image rect, so it can turn.
+                        let corners = [(wx, wz), (ex, wz), (ex, ez), (wx, ez)]
+                            .map(|(x, z)| self.world_to_screen(x, z));
+                        let (u, v) = ((vw / tf) as f32, (vh / tf) as f32);
+                        let uvs = [(0.0, 0.0), (u, 0.0), (u, v), (0.0, v)];
                         if let Some(tex) = self.texture(ctx, z, tx, ty) {
-                            painter.image(
-                                tex.id(),
-                                egui::Rect::from_two_pos(a, b),
-                                egui::Rect::from_min_max(
-                                    egui::pos2(0.0, 0.0),
-                                    egui::pos2((vw / tf) as f32, (vh / tf) as f32),
-                                ),
-                                egui::Color32::WHITE,
-                            );
+                            let mut mesh = egui::Mesh::with_texture(tex.id());
+                            for (pos, (u, v)) in corners.into_iter().zip(uvs) {
+                                mesh.vertices.push(egui::epaint::Vertex {
+                                    pos, uv: egui::pos2(u, v), color: egui::Color32::WHITE,
+                                });
+                            }
+                            mesh.indices.extend([0, 1, 2, 0, 2, 3]);
+                            painter.add(mesh);
                         }
                     }
                     if z == lvl_z { break }
@@ -1456,7 +1717,7 @@ impl App {
                 // ---- markers ------------------------------------------------
                 let mut hovered: Option<usize> = None;
                 let pointer = resp.hover_pos();
-                let show_labels = self.scale >= self.fit_scale(vp) * 1.4
+                let show_labels = self.scale >= self.north_fit(vp) * 1.4
                     || self.mset.items.len() <= 6;
                 self.cursor_world = pointer.map(|p| self.screen_to_world(p));
                 for (i, m) in self.mset.items.iter().enumerate() {
@@ -1587,7 +1848,152 @@ impl App {
 
                 if self.show_legend { self.legend(ui, vp) }
                 self.scale_bar(ui, vp);
+                self.compass(ui, vp);
+                self.floor_table(ui, vp);
             });
+    }
+
+    /// Rows of the floor table, top to bottom: the top-level map, then the
+    /// floors highest first, as a building directory reads.
+    fn floor_rows(&self) -> Vec<Option<usize>> {
+        std::iter::once(None).chain((0..self.floors.len()).rev().map(Some)).collect()
+    }
+
+    /// The floor table, top left, for a zone built on top of itself. Click a
+    /// row to show that floor; PageUp / PageDown step through the rows.
+    fn floor_table(&mut self, ui: &mut egui::Ui, vp: egui::Rect) {
+        if self.floors.is_empty() || self.maps.is_empty() { return }
+        let rows = self.floor_rows();
+        if !ui.ctx().wants_keyboard_input() {
+            let at = rows.iter().position(|r| *r == self.floor).unwrap_or(0);
+            let step = ui.ctx().input(|i| {
+                if i.key_pressed(egui::Key::PageDown) { 1 }
+                else if i.key_pressed(egui::Key::PageUp) { -1 }
+                else { 0 }
+            });
+            let next = (at as i32 + step).clamp(0, rows.len() as i32 - 1) as usize;
+            if next != at { self.set_floor(rows[next]) }
+        }
+
+        let (row_h, head_h, w) = (22.0, 26.0, 196.0);
+        let rect = egui::Rect::from_min_size(
+            vp.left_top() + egui::vec2(14.0, 14.0),
+            egui::vec2(w, head_h + row_h * rows.len() as f32 + 6.0),
+        );
+        // Swallow clicks and drags on the panel so they do not reach the map.
+        ui.interact(rect, ui.id().with("floors_bg"), egui::Sense::click_and_drag());
+        let p = ui.painter().clone();
+        p.rect(rect, 5.0, PAPER.gamma_multiply(0.95), egui::Stroke::new(2.0_f32, INK));
+        p.text(rect.left_top() + egui::vec2(10.0, 7.0), egui::Align2::LEFT_TOP,
+            "Floors", egui::FontId::proportional(12.0), INK);
+        p.text(rect.right_top() + egui::vec2(-10.0, 8.0), egui::Align2::RIGHT_TOP,
+            "PgUp / PgDn", egui::FontId::proportional(9.5), INK.gamma_multiply(0.55));
+
+        let mut picked = None;
+        for (k, row) in rows.iter().enumerate() {
+            let r = egui::Rect::from_min_size(
+                egui::pos2(rect.left() + 4.0, rect.top() + head_h + row_h * k as f32),
+                egui::vec2(w - 8.0, row_h),
+            );
+            let resp = ui.interact(r, ui.id().with(("floor_row", k)), egui::Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            let on = *row == self.floor;
+            if on {
+                p.rect_filled(r, 3.0, INK.gamma_multiply(0.85));
+            } else if resp.hovered() {
+                p.rect_filled(r, 3.0, INK.gamma_multiply(0.12));
+            }
+            // A rule between the overview and the floors proper.
+            if k == 1 {
+                p.line_segment([egui::pos2(r.left() + 4.0, r.top()), egui::pos2(r.right() - 4.0, r.top())],
+                    egui::Stroke::new(0.75_f32, INK.gamma_multiply(0.4)));
+            }
+            let col = if on { PAPER } else { INK };
+            let (num, name) = match row {
+                None => (String::new(), "Top level"),
+                Some(i) => match &self.floors[*i].floor {
+                    Some((n, name)) => (n.to_string(), name.as_str()),
+                    None => (String::new(), ""),
+                },
+            };
+            let font = egui::FontId::proportional(12.0);
+            p.text(egui::pos2(r.left() + 14.0, r.center().y), egui::Align2::CENTER_CENTER,
+                num, font.clone(), col);
+            p.text(egui::pos2(r.left() + 28.0, r.center().y), egui::Align2::LEFT_CENTER,
+                name, font, col);
+            if resp.clicked() { picked = Some(*row) }
+        }
+        if let Some(f) = picked { self.set_floor(f) }
+    }
+
+    /// Compass rose, top right. It turns with the map so north is always
+    /// readable; drag it to turn the map, click it for north up.
+    fn compass(&mut self, ui: &mut egui::Ui, vp: egui::Rect) {
+        if self.maps.is_empty() { return }
+        let r = 26.0;
+        let c = egui::pos2(vp.right() - r - 16.0, vp.top() + r + 16.0);
+        let rect = egui::Rect::from_center_size(c, egui::vec2(r * 2.0, r * 2.0));
+        let resp = ui.interact(rect, ui.id().with("compass"), egui::Sense::click_and_drag())
+            .on_hover_text("Drag to turn the map \u{2014} click for north up\nQ / E turn, N north up");
+        if resp.dragged() {
+            let dx = resp.drag_delta().x;
+            if dx != 0.0 {
+                self.rotate_about(dx * ROT_PER_PX, vp.center(), vp);
+                self.rotating = true;
+            }
+        }
+        if resp.clicked() && self.rot != 0.0 {
+            self.rotate_about(-self.rot, vp.center(), vp);
+            self.save_rotation();
+        }
+        if resp.hovered() || resp.dragged() {
+            ui.ctx().set_cursor_icon(if resp.dragged() { egui::CursorIcon::Grabbing }
+                else { egui::CursorIcon::Grab });
+        }
+
+        let p = ui.painter();
+        let ink = egui::Stroke::new(1.5_f32, INK);
+        p.circle(c, r, PAPER.gamma_multiply(0.95), egui::Stroke::new(2.0_f32, INK));
+        p.circle_stroke(c, r - 5.0, egui::Stroke::new(0.75_f32, INK.gamma_multiply(0.6)));
+        // Directions on screen of world north and east.
+        let n = self.rotv(egui::vec2(0.0, -1.0));
+        let e = self.rotv(egui::vec2(1.0, 0.0));
+        // Ticks at the eight points, longer on the four cardinals.
+        for k in 0..8 {
+            let a = self.rot + std::f32::consts::FRAC_PI_4 * k as f32;
+            let d = egui::vec2(a.sin(), -a.cos());
+            let inner = if k % 2 == 0 { r - 9.0 } else { r - 7.0 };
+            p.line_segment([c + d * inner, c + d * (r - 5.0)], ink);
+        }
+        // The needle: a red north half and an ink south half, each a pair of
+        // facets so it reads as a raised point rather than a flat arrow.
+        let (tip, tail, w) = (r - 10.0, r - 10.0, 5.0);
+        let red = egui::Color32::from_rgb(0xb0, 0x2a, 0x1e);
+        let dark_red = egui::Color32::from_rgb(0x7a, 0x1a, 0x12);
+        let nt = c + n * tip;
+        let st = c - n * tail;
+        let (l, rr) = (c - e * w, c + e * w);
+        p.add(egui::Shape::convex_polygon(vec![nt, rr, c], red, egui::Stroke::NONE));
+        p.add(egui::Shape::convex_polygon(vec![nt, c, l], dark_red, egui::Stroke::NONE));
+        p.add(egui::Shape::convex_polygon(vec![st, c, rr], INK, egui::Stroke::NONE));
+        p.add(egui::Shape::convex_polygon(vec![st, l, c],
+            egui::Color32::from_rgb(0x5a, 0x4c, 0x3c), egui::Stroke::NONE));
+        p.add(egui::Shape::closed_line(vec![nt, rr, st, l], egui::Stroke::new(1.0_f32, INK)));
+        p.circle_filled(c, 1.8, PAPER);
+        // Letters sit outside the ring, upright, in the direction they name.
+        let font = egui::FontId::proportional(12.0);
+        for (txt, d, col) in [("N", n, red), ("E", e, INK), ("S", -n, INK), ("W", -e, INK)] {
+            let at = c + d * (r + 9.0);
+            p.text(at + egui::vec2(1.0, 1.0), egui::Align2::CENTER_CENTER, txt, font.clone(),
+                PAPER);
+            p.text(at, egui::Align2::CENTER_CENTER, txt, font.clone(), col);
+        }
+        if self.rot != 0.0 {
+            let mut deg = self.rot.to_degrees().round() as i32;
+            if deg < 0 { deg += 360 }
+            p.text(egui::pos2(c.x, c.y + r + 22.0), egui::Align2::CENTER_TOP,
+                format!("{deg}\u{b0}"), egui::FontId::proportional(10.0), INK);
+        }
     }
 
     /// Scale bar and cursor position, bottom right.
@@ -1838,6 +2244,10 @@ fn main() -> eframe::Result<()> {
             // Optional value: only if the next argument is not itself a flag.
             "--generate" => usize::from(args.get(i + 1).is_some_and(|n| !n.starts_with("--"))),
             "--extract" => 2,
+            "--dump-tris" | "--dump-all-tris" => 3,
+            "--classes" | "--terrains" | "--externals" => 2,
+            "--dump-zones" | "--paint" => 1,
+            "--render-tris" => 7,
             "--render" => 4,
             _ => 0,
         };
@@ -1895,7 +2305,8 @@ fn main() -> eframe::Result<()> {
         want.sort_unstable();
         want.dedup();
         let t1 = std::time::Instant::now();
-        let f = gen::extract::extract_floors(&env, &want);
+        let shared = gen::bundle::Shared::open(std::path::Path::new(bundle).parent().unwrap());
+        let f = gen::extract::extract_floors(&env, &shared, &want);
         println!("up-facing tris: {}  unresolved meshes: {}", f.tris.len(), f.unresolved);
         println!("{:#?}", f.stats);
         println!("extracted in {:.2}s (total {:.2}s)", t1.elapsed().as_secs_f32(), t0.elapsed().as_secs_f32());
@@ -1906,6 +2317,223 @@ fn main() -> eframe::Result<()> {
             println!("bounds x {:.1}..{:.1}  y {:.1}..{:.1}  z {:.1}..{:.1}",
                      lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
         }
+        return Ok(());
+    }
+
+    // Paint one zone, as the app's "Paint this map" does, and wait for it.
+    if let Some(i) = args.iter().position(|a| a == "--paint") {
+        let want = args.get(i + 1).expect("--paint <Zone>").to_lowercase();
+        let Some(p) = discover_all().into_iter().find(|p| p.name.to_lowercase() == want) else {
+            eprintln!("no map for {want}; generate it first");
+            return Ok(());
+        };
+        let install = gen::job::Settings::load().resolve().expect("game install not found");
+        let out = pyramid::painted_path(&p.path);
+        let job = gen::job::PaintJob::start(install, p.name.clone(), out, gen::job::PaintFrame {
+            extent: p.extent,
+            base_ppu: p.levels.first().map_or(1.0, |l| l.ppu),
+            zooms: p.levels.len(),
+        });
+        let mut last = String::new();
+        loop {
+            if let Some(r) = job.poll() {
+                match r {
+                    Ok(path) => println!("wrote {} in {:.1}s", path.display(), job.started.elapsed().as_secs_f32()),
+                    Err(e) => eprintln!("failed: {e}"),
+                }
+                break;
+            }
+            let p = job.progress();
+            if p != last { println!("  {p}"); last = p }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        return Ok(());
+    }
+
+    // Every zone's walkable triangles, as generation loads them, to
+    // <dir>/<slug>.bin (see --dump-tris) with <slug>.json beside it.
+    if let Some(i) = args.iter().position(|a| a == "--dump-zones") {
+        let dir = PathBuf::from(args.get(i + 1).expect("--dump-zones <dir>"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let install = gen::job::Settings::load().resolve().expect("game install not found");
+        let located = gen::zones::survey_cached(&install, |_, _, _| {});
+        let shared = gen::bundle::Shared::open(&install);
+        let mut by_bundle: std::collections::BTreeMap<PathBuf, Vec<gen::zones::Located>> =
+            Default::default();
+        for l in located { by_bundle.entry(l.bundle.clone()).or_default().push(l) }
+        for (bundle, group) in by_bundle {
+            let env = gen::bundle::Env::open(&bundle).unwrap();
+            for l in group {
+                let gen::tiles::LoadedZone { tris, sea, props, bbox, bounds, .. } =
+                    gen::tiles::load_zone(&env, &shared, &l.group);
+                let slug = gen::zones::slug(&l.zone);
+                let bytes: Vec<u8> = tris.iter().flatten().flatten()
+                    .flat_map(|v| v.to_le_bytes()).collect();
+                std::fs::write(dir.join(format!("{slug}.bin")), bytes).unwrap();
+                let meta = serde_json::json!({
+                    "zone": l.zone, "tris": tris.len(), "sea": sea, "bounds": bounds,
+                    "bbox": [bbox.0, bbox.1, bbox.2, bbox.3],
+                    "props": props.iter().map(|(k, v)| (k.clone(), v.len()))
+                        .collect::<std::collections::BTreeMap<_, _>>(),
+                    "scenes": l.group.scenes(),
+                });
+                let mut files: Vec<usize> = Vec::new();
+                let idx = env.scene_index();
+                for path in l.group.scenes() {
+                    if let Some(fi) = idx.get(path).and_then(|c| env.file_index(c)) { files.push(fi) }
+                }
+                files.sort_unstable();
+                files.dedup();
+                if std::env::var("MNM_OBJECTS").is_ok() {
+                    let objs = gen::extract::objects(&env, &files);
+                    std::fs::write(dir.join(format!("{slug}.objects.json")),
+                        serde_json::to_string(&objs).unwrap()).unwrap();
+                }
+                std::fs::write(dir.join(format!("{slug}.json")),
+                    serde_json::to_string_pretty(&meta).unwrap()).unwrap();
+                println!("{:<24} {:>8} tris", l.zone, tris.len());
+            }
+        }
+        return Ok(());
+    }
+
+    // Every bundle's serialized files (CABs), to find where shared assets live.
+    if args.iter().any(|a| a == "--cab-index") {
+        let install = gen::job::Settings::load().resolve().expect("game install not found");
+        let mut all: Vec<PathBuf> = std::fs::read_dir(&install).unwrap().flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "bundle")).collect();
+        all.sort();
+        for b in all {
+            let t = std::time::Instant::now();
+            match gen::bundle::Env::open(&b) {
+                Ok(env) => {
+                    let name = b.file_name().unwrap().to_string_lossy();
+                    for c in env.cabs() { println!("{c}\t{name}") }
+                    eprintln!("{name}: {} files, {:.1}s", env.file_count(), t.elapsed().as_secs_f32());
+                }
+                Err(e) => eprintln!("{}: {e}", b.display()),
+            }
+        }
+        return Ok(());
+    }
+
+    // Which external files a scene's mesh colliders point into that its own
+    // bundle lacks, and how many colliders each.
+    if let Some(i) = args.iter().position(|a| a == "--externals") {
+        let bundle = args.get(i + 1).expect("--externals <bundle> <scene substring>");
+        let filter = args.get(i + 2).map(|s| s.to_lowercase()).unwrap_or_default();
+        let env = gen::bundle::Env::open(std::path::Path::new(bundle)).unwrap();
+        for (path, cab) in env.scene_index() {
+            if !path.to_lowercase().contains(&filter) { continue }
+            let Some(fi) = env.file_index(&cab) else { continue };
+            let missing = env.missing_externals(fi);
+            let mut counts = std::collections::BTreeMap::<String, usize>::new();
+            let n = env.col.serialized_files()[fi].file.objects.len();
+            for oi in 0..n {
+                if env.class_id(fi, oi) != Some(64) { continue }
+                let Some(mc) = env.read(fi, oi) else { continue };
+                let Some(p) = gen::bundle::as_pptr(gen::bundle::field(&mc, "m_Mesh")) else { continue };
+                if let Some((_, name)) = missing.iter().find(|(k, _)| *k as i64 == p.file) {
+                    *counts.entry(name.clone()).or_default() += 1;
+                }
+            }
+            println!("{path}: {} missing externals", missing.len());
+            for (k, v) in counts { println!("  {v:6} meshes in {k}") }
+        }
+        return Ok(());
+    }
+
+    // Describe the TerrainData behind a scene's terrain colliders.
+    if let Some(i) = args.iter().position(|a| a == "--terrains") {
+        let bundle = args.get(i + 1).expect("--terrains <bundle> <scene substring>");
+        let filter = args.get(i + 2).map(|s| s.to_lowercase()).unwrap_or_default();
+        let env = gen::bundle::Env::open(std::path::Path::new(bundle)).unwrap();
+        let mut files: Vec<usize> = env.scene_index().iter()
+            .filter(|(p, _)| p.to_lowercase().contains(&filter))
+            .filter_map(|(_, c)| env.file_index(c)).collect();
+        files.sort_unstable();
+        for s in gen::extract::terrain_probe(&env, &files) { println!("{s}") }
+        return Ok(());
+    }
+
+    // Count the Unity object classes in a zone's scene files.
+    if let Some(i) = args.iter().position(|a| a == "--classes") {
+        let bundle = args.get(i + 1).expect("--classes <bundle> <scene substring>");
+        let filter = args.get(i + 2).map(|s| s.to_lowercase()).unwrap_or_default();
+        let env = gen::bundle::Env::open(std::path::Path::new(bundle)).unwrap();
+        for (path, cab) in env.scene_index() {
+            if !path.to_lowercase().contains(&filter) { continue }
+            let Some(fi) = env.file_index(&cab) else { continue };
+            let n = env.col.serialized_files()[fi].file.objects.len();
+            let mut counts = std::collections::BTreeMap::<i32, usize>::new();
+            for oi in 0..n {
+                if let Some(c) = env.class_id(fi, oi) { *counts.entry(c).or_default() += 1 }
+            }
+            println!("{path}: {counts:?}");
+        }
+        println!("all files:");
+        for (fi, sf) in env.col.serialized_files().iter().enumerate() {
+            let navs = sf.file.objects.iter().filter(|o| o.class_id == 238).count();
+            if navs > 0 { println!("  file {fi}: {navs} NavMeshData") }
+        }
+        return Ok(());
+    }
+
+    // Write a zone's walkable triangles as raw little-endian f32, nine per
+    // triangle (x, y, z for each corner), for analysis outside the app.
+    if let Some(i) = args.iter().position(|a| a == "--dump-tris" || a == "--dump-all-tris") {
+        let min_ny = if args[i] == "--dump-all-tris" { -2.0 } else { 0.5 };
+        let bundle = args.get(i + 1).expect("--dump-tris <bundle> <scene substring> <out.bin>");
+        let filter = args.get(i + 2).map(|s| s.to_lowercase()).unwrap_or_default();
+        let out = args.get(i + 3).cloned().unwrap_or_else(|| "tris.bin".into());
+        let env = gen::bundle::Env::open(std::path::Path::new(bundle)).unwrap();
+        let mut files: Vec<usize> = env.scene_index().iter()
+            .filter(|(path, _)| (filter.is_empty() || path.to_lowercase().contains(&filter))
+                && gen::is_geometry_scene(path))
+            .filter_map(|(_, cab)| env.file_index(cab))
+            .collect();
+        files.sort_unstable();
+        files.dedup();
+        let shared = gen::bundle::Shared::open(std::path::Path::new(bundle).parent().unwrap());
+        let f = gen::extract::extract_faces(&env, &shared, &files, min_ny);
+        let bytes: Vec<u8> = f.tris.iter().flatten().flatten()
+            .flat_map(|v| v.to_le_bytes()).collect();
+        std::fs::write(&out, bytes).unwrap();
+        println!("wrote {} triangles to {out}", f.tris.len());
+        return Ok(());
+    }
+
+    // Render triangles written by --dump-tris (or a subset of them) into a
+    // fixed world box, so separately rendered subsets line up.
+    if let Some(i) = args.iter().position(|a| a == "--render-tris") {
+        let a = |k: usize| args.get(i + k).cloned().unwrap_or_default();
+        let (src, ppu, out) = (a(1), a(2).parse::<f64>().unwrap_or(2.0), a(3));
+        let bb: Vec<f64> = (4..8).map(|k| a(k).parse().unwrap_or(0.0)).collect();
+        let raw = std::fs::read(&src).unwrap();
+        let fl: Vec<f32> = raw.chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let tris: Vec<gen::extract::Tri> = fl.chunks_exact(9)
+            .map(|c| [[c[0], c[1], c[2]], [c[3], c[4], c[5]], [c[6], c[7], c[8]]]).collect();
+        let bbox = (bb[0], bb[1], bb[2], bb[3]);
+        let edges = gen::raster::global_band_edges(&tris, 8);
+        // MNM_FLOOR: draw as one floor of a multi-storey zone.
+        let hgt = if std::env::var("MNM_FLOOR").is_ok() {
+            gen::raster::rasterize_floor(&tris, ppu, bbox, 2.5, 20.0)
+        } else {
+            gen::raster::rasterize(&tris, ppu, bbox)
+        };
+        let r = gen::ink::render(&hgt, &edges, &gen::ink::InkOptions {
+            ppu, step_thresh: 3.2, sea: None, seed: 5,
+        });
+        let rgb = r.img;
+        let mut buf = image::RgbImage::new(rgb.w as u32, rgb.h as u32);
+        for (i, p) in rgb.v.iter().enumerate() {
+            buf.put_pixel((i % rgb.w) as u32, (i / rgb.w) as u32,
+                image::Rgb([(p[0]*255.0) as u8, (p[1]*255.0) as u8, (p[2]*255.0) as u8]));
+        }
+        buf.save(&out).unwrap();
+        println!("wrote {out}: {} tris, {}x{}", tris.len(), rgb.w, rgb.h);
         return Ok(());
     }
 
@@ -1930,7 +2558,8 @@ fn main() -> eframe::Result<()> {
         }
         files.sort_unstable();
         files.dedup();
-        let f = gen::extract::extract_floors(&env, &files);
+        let shared = gen::bundle::Shared::open(std::path::Path::new(bundle).parent().unwrap());
+        let f = gen::extract::extract_floors(&env, &shared, &files);
         println!("tris {} (unresolved {})", f.tris.len(), f.unresolved);
         let sea = gen::scene::find_sea_level(&env, &files);
         println!("sea level {:?}", sea);
@@ -2199,61 +2828,51 @@ fn main() -> eframe::Result<()> {
             .filter(|l| only.as_ref().map_or(true, |o| l.zone.to_lowercase().contains(&o.to_lowercase())))
             .collect();
         println!("{} zones to build", wanted.len());
-        let mut by_bundle: std::collections::BTreeMap<std::path::PathBuf, Vec<gen::zones::Located>> =
-            Default::default();
         let many = wanted.len() > 1;
-        for l in wanted { by_bundle.entry(l.bundle.clone()).or_default().push(l) }
         let (mut tiles_n, mut bytes_n, mut zones_n) = (0usize, 0u64, 0usize);
-        use rayon::prelude::*;
+        // Profiling runs one zone at a time so stage lines do not interleave.
         let lanes = if gen::profiling() && many { 1 } else { gen::job::zone_concurrency() };
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(lanes).build().unwrap();
         println!("building {lanes} zone(s) at a time");
-        // Profiling forces one zone at a time so stage lines do not interleave --
-        // but only when there is more than one zone to build. Shrinking the pool
-        // also shrinks the pool that the *nested* parallel sections run on, which
-        // made the profile report serial times for work that is parallel in a
-        // real run.
         let force = args.iter().any(|a| a == "--force");
-        for (bundle, group) in by_bundle {
-            // Decide what is left to do BEFORE opening the bundle: these files
-            // run to 2 GB, and a resumed run should not pay to open one just to
-            // discover every zone in it is already built.
-            let todo: Vec<_> = group.into_iter().filter(|l| {
-                let dest = out.join(format!("{}.mbtiles", gen::zones::slug(&l.zone)));
-                if dest.exists() && !force {
-                    println!("  {:<24} already built (--force to rebuild)", l.zone);
-                    false
-                } else { true }
-            }).collect();
-            if todo.is_empty() { continue }
-            let env = match gen::bundle::Env::open(&bundle) {
-                Ok(e) => e,
-                Err(e) => { eprintln!("  !! {}: {e}", bundle.display()); continue }
-            };
-            let out = &out;
-            let res: Vec<(usize, u64, bool)> = pool.install(|| todo.par_iter().map(|l| {
-                let t1 = std::time::Instant::now();
-                let dest = out.join(format!("{}.mbtiles", gen::zones::slug(&l.zone)));
-                let (tris, sea, props) = gen::tiles::load_zone(&env, &l.group);
-                if tris.is_empty() {
-                    println!("  {:<24} skipped (no geometry)", l.zone);
-                    return (0, 0, false);
-                }
-                match gen::tiles::build(&dest,
-                    &gen::tiles::ZoneInput { name: &l.zone, tris: &tris, sea, props: &props },
-                    &gen::tiles::Settings::default(), |_, _| {})
-                {
-                    Ok((n, b)) => {
-                        println!("  {:<24} {:>7} tris {:>5} tiles {:>6.1} MB  {:.1}s",
-                                 l.zone, tris.len(), n, b as f64 / 1e6, t1.elapsed().as_secs_f32());
-                        (n, b, true)
-                    }
-                    Err(e) => { eprintln!("  !! {}: {e}", l.zone); (0, 0, false) }
-                }
-            }).collect());
-            for (n, b, ok) in res {
-                tiles_n += n; bytes_n += b; if ok { zones_n += 1 }
+        let floors_only = args.iter().any(|a| a == "--floors-only");
+        let todo: Vec<_> = wanted.into_iter().filter(|l| {
+            if floors_only && gen::floors::plan(&l.zone).is_empty() { return false }
+            let dest = out.join(format!("{}.mbtiles", gen::zones::slug(&l.zone)));
+            if dest.exists() && !force {
+                println!("  {:<24} already built (--force to rebuild)", l.zone);
+                false
+            } else { true }
+        }).collect();
+        let no_cancel = std::sync::atomic::AtomicBool::new(false);
+        let res = gen::job::run_zones(todo, lanes, &install, &out, &no_cancel, |env, shared, l| {
+            let t1 = std::time::Instant::now();
+            let dest = out.join(format!("{}.mbtiles", gen::zones::slug(&l.zone)));
+            let gen::tiles::LoadedZone { tris, sea, props, bbox, .. } =
+                gen::tiles::load_zone(env, shared, &l.group);
+            if tris.is_empty() {
+                println!("  {:<24} skipped (no geometry)", l.zone);
+                return (0, 0, false);
             }
+            match gen::tiles::build_zone(&dest,
+                &gen::tiles::ZoneInput { name: &l.zone, tris: &tris, sea, props: &props,
+                                         bbox: Some(bbox) },
+                &gen::tiles::Settings {
+                    floors: !args.iter().any(|a| a == "--no-floors"),
+                    floors_only,
+                    skip_floors: settings.floors_off.get(&l.zone).cloned().unwrap_or_default(),
+                    ..Default::default()
+                }, |_, _| {})
+            {
+                Ok((n, b)) => {
+                    println!("  {:<24} {:>7} tris {:>5} tiles {:>6.1} MB  {:.1}s",
+                             l.zone, tris.len(), n, b as f64 / 1e6, t1.elapsed().as_secs_f32());
+                    (n, b, true)
+                }
+                Err(e) => { eprintln!("  !! {}: {e}", l.zone); (0, 0, false) }
+            }
+        }, |l, msg| { eprintln!("  !! {}: {msg}", l.zone); (0, 0, false) });
+        for (n, b, ok) in res {
+            tiles_n += n; bytes_n += b; if ok { zones_n += 1 }
         }
         println!("\n{zones_n} zones, {tiles_n} tiles, {:.0} MB in {:.0}s",
                  bytes_n as f64 / 1e6, t0.elapsed().as_secs_f32());

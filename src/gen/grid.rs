@@ -94,6 +94,43 @@ pub fn sorted_copy(v: &[f32]) -> Vec<f32> {
     s
 }
 
+// ------------------------------------------------------------ parallelism
+//
+// Every filter here works row by row and then column by column, and each row
+// (or column) is independent. Rows are split across threads directly; for
+// columns the grid is transposed so they become rows, processed the same way,
+// and transposed back. A transpose is cheap next to the filter, and it keeps
+// every thread writing its own contiguous memory. Results are bit-identical
+// to the sequential forms (--selftest checks the sums).
+
+use rayon::prelude::*;
+
+fn transpose<T: Copy + Send + Sync + Default>(v: &[T], w: usize, h: usize) -> Vec<T> {
+    let mut out = vec![T::default(); w * h];
+    out.par_chunks_mut(h).enumerate().for_each(|(x, col)| {
+        for y in 0..h { col[y] = v[y * w + x] }
+    });
+    out
+}
+
+/// Apply `f(row_in, row_out)` to every row of a `w`-wide raster in parallel.
+fn rows<T: Copy + Send + Sync + Default, U: Copy + Send + Sync + Default>(
+    v: &[T], w: usize, f: impl Fn(&[T], &mut [U]) + Sync,
+) -> Vec<U> {
+    let mut out = vec![U::default(); v.len()];
+    out.par_chunks_mut(w).zip(v.par_chunks(w)).for_each(|(o, i)| f(i, o));
+    out
+}
+
+/// As [`rows`], but along columns.
+fn cols<T: Copy + Send + Sync + Default, U: Copy + Send + Sync + Default>(
+    v: &[T], w: usize, h: usize, f: impl Fn(&[T], &mut [U]) + Sync,
+) -> Vec<U> {
+    let t = transpose(v, w, h);
+    let r = rows(&t, h, f);
+    transpose(&r, h, w)
+}
+
 // ---------------------------------------------------------------- gaussian
 
 /// scipy's reflect mode: `d c b a | a b c d | d c b a`.
@@ -129,34 +166,22 @@ fn gauss_kernel(sigma: f32) -> Vec<f32> {
 
 /// Separable gaussian blur with independent sigmas, as scipy allows.
 pub fn gaussian_xy(g: &Grid, sigma_x: f32, sigma_y: f32) -> Grid {
-    let kx = gauss_kernel(sigma_x);
-    let ky = gauss_kernel(sigma_y);
-    let (w, h) = (g.w as isize, g.h as isize);
-    let mut tmp = Grid::new(g.w, g.h, 0.0);
-    let rx = (kx.len() / 2) as isize;
-    for y in 0..g.h {
-        for x in 0..g.w {
-            let mut acc = 0.0;
-            for (j, kv) in kx.iter().enumerate() {
-                let sx = reflect(x as isize + j as isize - rx, w);
-                acc += g.at(sx, y) * kv;
+    fn conv(k: &[f32]) -> impl Fn(&[f32], &mut [f32]) + Sync + '_ {
+        let r = (k.len() / 2) as isize;
+        move |src: &[f32], dst: &mut [f32]| {
+            let n = src.len() as isize;
+            for x in 0..src.len() {
+                let mut acc = 0.0;
+                for (j, kv) in k.iter().enumerate() {
+                    acc += src[reflect(x as isize + j as isize - r, n)] * kv;
+                }
+                dst[x] = acc;
             }
-            tmp.set(x, y, acc);
         }
     }
-    let mut out = Grid::new(g.w, g.h, 0.0);
-    let ry = (ky.len() / 2) as isize;
-    for y in 0..g.h {
-        for x in 0..g.w {
-            let mut acc = 0.0;
-            for (j, kv) in ky.iter().enumerate() {
-                let sy = reflect(y as isize + j as isize - ry, h);
-                acc += tmp.at(x, sy) * kv;
-            }
-            out.set(x, y, acc);
-        }
-    }
-    out
+    let (kx, ky) = (gauss_kernel(sigma_x), gauss_kernel(sigma_y));
+    let tmp = rows(&g.v, g.w, conv(&kx));
+    Grid { w: g.w, h: g.h, v: cols(&tmp, g.w, g.h, conv(&ky)) }
 }
 
 pub fn gaussian(g: &Grid, sigma: f32) -> Grid {
@@ -168,7 +193,7 @@ pub fn upsample(g: &Grid, w: usize, h: usize) -> Grid {
     let mut out = Grid::new(w, h, 0.0);
     let sx = (g.w.max(2) - 1) as f32 / (w.max(2) - 1) as f32;
     let sy = (g.h.max(2) - 1) as f32 / (h.max(2) - 1) as f32;
-    for y in 0..h {
+    out.v.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
         let fy = (y as f32 * sy).clamp(0.0, g.h as f32 - 1.0);
         let (y0, fry) = (fy.floor() as usize, fy.fract());
         let y1 = (y0 + 1).min(g.h - 1);
@@ -180,9 +205,9 @@ pub fn upsample(g: &Grid, w: usize, h: usize) -> Grid {
                 + g.at(x1, y0) * frx * (1.0 - fry)
                 + g.at(x0, y1) * (1.0 - frx) * fry
                 + g.at(x1, y1) * frx * fry;
-            out.set(x, y, v);
+            row[x] = v;
         }
-    }
+    });
     out
 }
 
@@ -239,34 +264,20 @@ fn box_blur(g: &Grid, r: usize) -> Grid {
     if r == 0 {
         return g.clone();
     }
-    let mut tmp = Grid::new(g.w, g.h, 0.0);
     let norm = 1.0 / (2 * r + 1) as f32;
-    for y in 0..g.h {
+    let line = |src: &[f32], dst: &mut [f32]| {
+        let n = src.len() as isize;
         let mut acc = 0.0f32;
         for i in -(r as isize)..=(r as isize) {
-            acc += g.at(reflect(i, g.w as isize), y);
+            acc += src[reflect(i, n)];
         }
-        for x in 0..g.w {
-            tmp.set(x, y, acc * norm);
-            let out_x = reflect(x as isize - r as isize, g.w as isize);
-            let in_x = reflect(x as isize + r as isize + 1, g.w as isize);
-            acc += g.at(in_x, y) - g.at(out_x, y);
+        for x in 0..src.len() {
+            dst[x] = acc * norm;
+            acc += src[reflect(x as isize + r as isize + 1, n)] - src[reflect(x as isize - r as isize, n)];
         }
-    }
-    let mut out = Grid::new(g.w, g.h, 0.0);
-    for x in 0..g.w {
-        let mut acc = 0.0f32;
-        for i in -(r as isize)..=(r as isize) {
-            acc += tmp.at(x, reflect(i, g.h as isize));
-        }
-        for y in 0..g.h {
-            out.set(x, y, acc * norm);
-            let out_y = reflect(y as isize - r as isize, g.h as isize);
-            let in_y = reflect(y as isize + r as isize + 1, g.h as isize);
-            acc += tmp.at(x, in_y) - tmp.at(x, out_y);
-        }
-    }
-    out
+    };
+    let tmp = rows(&g.v, g.w, line);
+    Grid { w: g.w, h: g.h, v: cols(&tmp, g.w, g.h, line) }
 }
 
 // ------------------------------------------------------ distance transform
@@ -276,8 +287,13 @@ fn box_blur(g: &Grid, r: usize) -> Grid {
 ///
 /// Distance is measured to the nearest **true** pixel of `src`.
 pub fn edt(src: &Mask) -> (Grid, Vec<u32>) {
+    // f64 throughout. The parabola intersections subtract squared indices,
+    // and in f32 those run out of precision past ~4,000 pixels (16.7M): on a
+    // tall raster pixels inside the mask came out at a nonzero distance, and
+    // the rock hatching that keys off this distance drew a dot screen over
+    // whole regions of land at fine zoom.
     let (w, h) = (src.w, src.h);
-    const INF: f32 = 1e20;
+    const INF: f64 = 1e30;
     let mut f = vec![INF; w * h];
     let mut idx = vec![u32::MAX; w * h];
     for i in 0..w * h {
@@ -287,17 +303,14 @@ pub fn edt(src: &Mask) -> (Grid, Vec<u32>) {
         }
     }
     // columns, then rows: the 1-D transform is applied along each axis.
-    let mut d = vec![0.0f32; w.max(h)];
-    let mut di = vec![0u32; w.max(h)];
-    let mut vpos = vec![0usize; w.max(h)];
-    let mut z = vec![0.0f32; w.max(h) + 1];
-
-    let mut pass = |n: usize, stride: usize, base: usize,
-                    f: &mut Vec<f32>, idx: &mut Vec<u32>| {
-        for q in 0..n {
-            d[q] = f[base + q * stride];
-            di[q] = idx[base + q * stride];
-        }
+    // Each line is independent; columns go through a transpose.
+    fn pass(f: &mut [f64], idx: &mut [u32]) {
+        const INF: f64 = 1e30;
+        let n = f.len();
+        let d: Vec<f64> = f.to_vec();
+        let di: Vec<u32> = idx.to_vec();
+        let mut vpos = vec![0usize; n];
+        let mut z = vec![0.0f64; n + 1];
         let mut k = 0usize;
         vpos[0] = 0;
         z[0] = -INF;
@@ -305,8 +318,8 @@ pub fn edt(src: &Mask) -> (Grid, Vec<u32>) {
         for q in 1..n {
             loop {
                 let p = vpos[k];
-                let s = ((d[q] + (q * q) as f32) - (d[p] + (p * p) as f32))
-                    / (2.0 * q as f32 - 2.0 * p as f32);
+                let (qf, pf) = (q as f64, p as f64);
+                let s = ((d[q] + qf * qf) - (d[p] + pf * pf)) / (2.0 * qf - 2.0 * pf);
                 if s <= z[k] && k > 0 {
                     k -= 1;
                 } else {
@@ -320,23 +333,24 @@ pub fn edt(src: &Mask) -> (Grid, Vec<u32>) {
         }
         k = 0;
         for q in 0..n {
-            while z[k + 1] < q as f32 {
+            while z[k + 1] < q as f64 {
                 k += 1;
             }
             let p = vpos[k];
-            let dq = (q as f32 - p as f32).powi(2) + d[p];
-            f[base + q * stride] = dq;
-            idx[base + q * stride] = di[p];
+            f[q] = (q as f64 - p as f64).powi(2) + d[p];
+            idx[q] = di[p];
         }
+    }
+    let both = |f: &mut Vec<f64>, idx: &mut Vec<u32>, lw: usize| {
+        f.par_chunks_mut(lw).zip(idx.par_chunks_mut(lw)).for_each(|(a, b)| pass(a, b));
     };
-
-    for x in 0..w {
-        pass(h, w, x, &mut f, &mut idx);
-    }
-    for y in 0..h {
-        pass(w, 1, y * w, &mut f, &mut idx);
-    }
-    let g = Grid { w, h, v: f.iter().map(|t| t.max(0.0).sqrt()).collect() };
+    let mut ft = transpose(&f, w, h);
+    let mut it = transpose(&idx, w, h);
+    both(&mut ft, &mut it, h);
+    let mut f = transpose(&ft, h, w);
+    let mut idx = transpose(&it, h, w);
+    both(&mut f, &mut idx, w);
+    let g = Grid { w, h, v: f.iter().map(|t| t.max(0.0).sqrt() as f32).collect() };
     (g, idx)
 }
 
@@ -363,28 +377,25 @@ pub fn disk(r: usize) -> Vec<(isize, isize)> {
 }
 
 pub fn dilate(m: &Mask, se: &[(isize, isize)]) -> Mask {
+    // Gathered rather than scattered, so rows can be filled independently:
+    // a pixel is set if any pixel of the reflected element is.
     let mut out = Mask::new(m.w, m.h, false);
     let (w, h) = (m.w as isize, m.h as isize);
-    for y in 0..m.h {
+    out.v.par_chunks_mut(m.w).enumerate().for_each(|(y, row)| {
         for x in 0..m.w {
-            if !m.at(x, y) {
-                continue;
-            }
-            for (dx, dy) in se {
-                let (nx, ny) = (x as isize + dx, y as isize + dy);
-                if nx >= 0 && ny >= 0 && nx < w && ny < h {
-                    out.v[ny as usize * m.w + nx as usize] = true;
-                }
-            }
+            row[x] = se.iter().any(|(dx, dy)| {
+                let (nx, ny) = (x as isize - dx, y as isize - dy);
+                nx >= 0 && ny >= 0 && nx < w && ny < h && m.v[ny as usize * m.w + nx as usize]
+            });
         }
-    }
+    });
     out
 }
 
 pub fn erode(m: &Mask, se: &[(isize, isize)]) -> Mask {
     let mut out = Mask::new(m.w, m.h, false);
     let (w, h) = (m.w as isize, m.h as isize);
-    for y in 0..m.h {
+    out.v.par_chunks_mut(m.w).enumerate().for_each(|(y, row)| {
         for x in 0..m.w {
             let mut all = true;
             for (dx, dy) in se {
@@ -396,9 +407,9 @@ pub fn erode(m: &Mask, se: &[(isize, isize)]) -> Mask {
                     break;
                 }
             }
-            out.v[y * m.w + x] = all;
+            row[x] = all;
         }
-    }
+    });
     out
 }
 
@@ -493,35 +504,16 @@ pub fn min_filter(g: &Grid, win: usize) -> Grid {
 /// three passes over the row and is exact, not an approximation.
 fn rank_filter(g: &Grid, win: usize, want_max: bool) -> Grid {
     let r = win / 2;
-    let mut tmp = Grid::new(g.w, g.h, 0.0);
-    let mut row = vec![0.0f32; g.w + 2 * r];
-    let mut pre = vec![0.0f32; g.w + 2 * r];
-    let mut suf = vec![0.0f32; g.w + 2 * r];
-    for y in 0..g.h {
-        for i in 0..row.len() {
-            let sx = reflect(i as isize - r as isize, g.w as isize);
-            row[i] = g.at(sx, y);
-        }
+    let line = |src: &[f32], dst: &mut [f32]| {
+        let n = src.len();
+        let row: Vec<f32> = (0..n + 2 * r).map(|i| src[reflect(i as isize - r as isize, n as isize)]).collect();
+        let mut pre = vec![0.0f32; n + 2 * r];
+        let mut suf = vec![0.0f32; n + 2 * r];
         line_rank(&row, win, want_max, &mut pre, &mut suf);
-        for x in 0..g.w {
-            tmp.set(x, y, pre[x]);
-        }
-    }
-    let mut out = Grid::new(g.w, g.h, 0.0);
-    let mut col = vec![0.0f32; g.h + 2 * r];
-    let mut pre2 = vec![0.0f32; g.h + 2 * r];
-    let mut suf2 = vec![0.0f32; g.h + 2 * r];
-    for x in 0..g.w {
-        for i in 0..col.len() {
-            let sy = reflect(i as isize - r as isize, g.h as isize);
-            col[i] = tmp.at(x, sy);
-        }
-        line_rank(&col, win, want_max, &mut pre2, &mut suf2);
-        for y in 0..g.h {
-            out.set(x, y, pre2[y]);
-        }
-    }
-    out
+        dst.copy_from_slice(&pre[..n]);
+    };
+    let tmp = rows(&g.v, g.w, line);
+    Grid { w: g.w, h: g.h, v: cols(&tmp, g.w, g.h, line) }
 }
 
 /// One-dimensional windowed max/min. `src` is already padded by the radius on
@@ -573,8 +565,8 @@ fn pick(acc: f32, v: f32, want_max: bool) -> f32 {
 pub fn median3(g: &Grid) -> Grid {
     let (w, h) = (g.w as isize, g.h as isize);
     let mut out = Grid::new(g.w, g.h, 0.0);
-    let mut buf = [0.0f32; 9];
-    for y in 0..g.h {
+    out.v.par_chunks_mut(g.w).enumerate().for_each(|(y, row)| {
+        let mut buf = [0.0f32; 9];
         for x in 0..g.w {
             let mut n = 0;
             for dy in -1..=1 {
@@ -587,9 +579,9 @@ pub fn median3(g: &Grid) -> Grid {
             }
             let s = &mut buf[..n];
             s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            out.set(x, y, s[n / 2]);
+            row[x] = s[n / 2];
         }
-    }
+    });
     out
 }
 
@@ -597,18 +589,18 @@ pub fn median3(g: &Grid) -> Grid {
 pub fn gradient(g: &Grid) -> (Grid, Grid) {
     let mut gy = Grid::new(g.w, g.h, 0.0);
     let mut gx = Grid::new(g.w, g.h, 0.0);
-    for y in 0..g.h {
+    gy.v.par_chunks_mut(g.w).zip(gx.v.par_chunks_mut(g.w)).enumerate().for_each(|(y, (ry, rx))| {
         for x in 0..g.w {
             let a = g.at(x, if y + 1 < g.h { y + 1 } else { y });
             let b = g.at(x, y.saturating_sub(1));
             let span = if y + 1 < g.h && y > 0 { 2.0 } else { 1.0 };
-            gy.set(x, y, (a - b) / span);
+            ry[x] = (a - b) / span;
             let c = g.at(if x + 1 < g.w { x + 1 } else { x }, y);
             let d = g.at(x.saturating_sub(1), y);
             let span = if x + 1 < g.w && x > 0 { 2.0 } else { 1.0 };
-            gx.set(x, y, (c - d) / span);
+            rx[x] = (c - d) / span;
         }
-    }
+    });
     (gy, gx)
 }
 
