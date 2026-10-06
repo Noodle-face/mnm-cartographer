@@ -17,6 +17,7 @@ pub mod extract;
 pub mod floors;
 pub mod bounds;
 pub mod paint;
+pub mod materials;
 
 /// Scenes that carry no walkable geometry, or carry geometry that lies about
 /// the zone's size. Audio subscenes are empty; distant/facade/backdrop scenery

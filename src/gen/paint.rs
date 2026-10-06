@@ -17,10 +17,39 @@ use super::raster::Bbox;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 
-pub struct PaintOptions {
+pub struct PaintOptions<'a> {
     pub ppu: f64,
     pub sea: Option<f32>,
     pub bbox: Bbox,
+    /// Per pixel (same layout as the height raster), an index into the
+    /// table: what the surface there is made of. None paints it all as sand.
+    pub classes: Option<(&'a [u16], &'a [MatClass])>,
+}
+
+use super::materials::{self as mc, MatClass};
+
+/// The class painted at a world point, from the surface's layers and the
+/// ground's slope (rise per world unit).
+///
+/// The game blends a surface's layers through masks the map does not read,
+/// but its terrain materials follow one pattern: a cliff texture in one layer
+/// and ground textures (grass, sand, dirt) in the others, the cliff showing
+/// on steep ground and the ground layers on the flat. So rock goes where it
+/// is steep, the first ground layer covers the rest, and any further layers
+/// appear as patches placed by noise -- the right materials in roughly the
+/// right places.
+fn class_at(t: MatClass, x: f64, z: f64, slope: f32, fallback: u8) -> u8 {
+    let layers: Vec<u8> = [t.base, t.blend[0], t.blend[1]].into_iter()
+        .filter(|&c| c != mc::UNKNOWN).collect();
+    if layers.is_empty() { return fallback }
+    let rocky = layers.contains(&mc::ROCK);
+    let ground: Vec<u8> = layers.iter().copied().filter(|&c| c != mc::ROCK).collect();
+    if ground.is_empty() { return mc::ROCK }
+    if rocky && slope > 0.75 { return mc::ROCK }
+    if ground.len() > 1 && fbm(x, z, 45.0, 31) > 0.3 { return ground[1] }
+    if ground.len() > 2 && fbm(x, z, 60.0, 37) > 0.45 { return ground[2] }
+    if rocky && fbm(x, z, 30.0, 39) > 0.62 { return mc::ROCK }
+    ground[0]
 }
 
 // ------------------------------------------------------------------ noise
@@ -135,9 +164,7 @@ fn rgb(r: u8, g: u8, b: u8) -> [f32; 3] { [r as f32, g as f32, b as f32] }
 
 // ----------------------------------------------------------------- render
 
-/// Paint a height raster (row 0 = south, NaN where nothing is walkable).
-/// The result is north-up, like [`super::ink::render`].
-pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &PaintOptions) -> Rgb {
+pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &PaintOptions<'_>) -> Rgb {
     let _t = super::Timer::start("paint (total)");
     let (w, h, ppu) = (height.w, height.h, o.ppu);
     let p = ppu as f32;
@@ -157,9 +184,39 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
     let void = Mask { w, h, v: dist_empty.v.iter().map(|&d| d > px(5.0)).collect() };
     let hs = blur(&hf, px(1.5));
 
+    // ---- what each pixel is made of --------------------------------------
+    // Pixels nothing was rasterised at take the class of the nearest that
+    // was, as their heights do.
+    let class: Vec<u8> = match o.classes {
+        None => vec![mc::SAND; n],
+        Some((tags, table)) => {
+            // Unknown surfaces (placeholders) take the zone's commonest class.
+            let mut count = [0usize; 16];
+            for &t in tags.iter() {
+                if let Some(c) = table.get(t as usize) { count[c.base as usize] += 1 }
+            }
+            count[mc::UNKNOWN as usize] = 0;
+            let fallback = (0..16).max_by_key(|&k| count[k]).filter(|&k| count[k] > 0)
+                .unwrap_or(mc::SAND as usize) as u8;
+            let (gy, gx) = gradient(&blur(&hf, px(1.2)));
+            (0..n).into_par_iter().map(|i| {
+                let j = nearest[i];
+                let t = if j == u32::MAX { u16::MAX } else { tags[j as usize] };
+                let (x, z) = world_of(i);
+                let slope = gx.v[i].hypot(gy.v[i]) * p;
+                match table.get(t as usize) {
+                    Some(&tc) => class_at(tc, x, z, slope, fallback),
+                    None => fallback,
+                }
+            }).collect()
+        }
+    };
+    let is = |k: u8| Mask { w, h, v: class.iter().map(|&c| c == k).collect() };
+
     // ---- land and water --------------------------------------------------
     let sea = o.sea.unwrap_or(f32::MIN);
-    let land0 = Mask { w, h, v: (0..n).map(|i| hs.v[i] > sea + 0.3 && !void.v[i]).collect() };
+    // Ground made of water is water, whatever its height.
+    let land0 = Mask { w, h, v: (0..n).map(|i| hs.v[i] > sea + 0.3 && !void.v[i] && class[i] != mc::WATER).collect() };
     let land0 = open(&close(&land0, px(3.0).max(1.0)), px(2.0).max(1.0));
     let mut land = drop_small(&land0, (150.0 * ppu * ppu) as usize + 1);
     // Small enclosed water is a dip in the ground, not a lake.
@@ -184,7 +241,16 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
     let steep = Mask { w, h, v: (0..n).map(|i| land.v[i] && slope[i] > 0.9).collect() };
     let steep = close(&steep, px(2.0).max(1.0));
     let near_steep = grow(&steep, px(18.0));
-    let rock = Mask { w, h, v: (0..n).map(|i| steep.v[i] || (land.v[i] && rel[i] > 0.55 && near_steep.v[i])).collect() };
+    // Rock: what is made of rock, and steep natural ground whatever it is
+    // made of -- a cliff faced with sand still reads as a cliff. Built
+    // surfaces are never rock, however steep.
+    let built = |c: u8| matches!(c, mc::WOOD | mc::STONE | mc::METAL | mc::CLOTH);
+    // With classes known, steepness has already decided rock per surface;
+    // without, fall back to judging by the terrain alone.
+    let known = o.classes.is_some();
+    let rock = Mask { w, h, v: (0..n).map(|i| land.v[i] && !built(class[i])
+        && (class[i] == mc::ROCK
+            || (!known && (steep.v[i] || (rel[i] > 0.55 && near_steep.v[i]))))).collect() };
     let rock = drop_small(&open(&rock, 1.5), (120.0 * ppu * ppu) as usize + 1);
 
     // A wall is a big rise over a short run on otherwise level ground.
@@ -208,7 +274,8 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
     let dist_l = distance_to_background(&land);   // inside land, to water
     let dist_w = distance_to_background(&water);  // inside water, to land
     let rock_in = distance_to_background(&rock);
-    let calm = blur(&as_grid(&water.or(&rock).or(&walls)), px(14.0));
+    // Dunes only form on sand.
+    let calm = blur(&as_grid(&water.or(&rock).or(&walls).or(&is(mc::SAND).not())), px(14.0));
     let wsoft = blur(&as_grid(&water), 0.9);
     let rsoft = blur(&as_grid(&rock), 0.8);
     let wallsoft = blur(&as_grid(&walls), 0.6);
@@ -265,11 +332,61 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
     let (foam_c, foam2_c) = (rgb(235, 245, 240), rgb(215, 238, 236));
     let mut img: Vec<[f32; 3]> = (0..n).into_par_iter().map(|i| {
         let (x, z) = world_of(i);
-        // sand
+        // ground, by what it is made of
         let tone = fbm(x, z, 300.0, 5);
-        let t = (0.25 + 0.75 * (shade_d.v[i] * 0.7 + shade_t.v[i] * 0.45) - 0.18 + tone * 0.08).clamp(0.0, 1.0);
         let grain = (rand01((x * 4.0) as i64, (z * 4.0) as i64, 9) - 0.5) * 9.0;
-        let mut c = mix(sand_d, sand_l, t);
+        let lit = 0.72 + 0.42 * shade_t.v[i];
+        let mut c = match class[i] {
+            mc::GRASS => {
+                let b = fbm(x, z, 18.0, 41) * 0.5 + 0.5;
+                let tuft = if rand01((x * 2.0) as i64, (z * 2.0) as i64, 43) > 0.93 { 0.82 } else { 1.0 };
+                scale(mix(rgb(74, 112, 46), rgb(132, 168, 78), (b + tone * 0.2).clamp(0.0, 1.0)), lit * tuft)
+            }
+            mc::DIRT => {
+                let b = fbm(x, z, 12.0, 47) * 0.5 + 0.5;
+                let pebble = if rand01((x * 3.0) as i64, (z * 3.0) as i64, 49) > 0.95 { 0.8 } else { 1.0 };
+                scale(mix(rgb(122, 92, 62), rgb(176, 142, 102), b), lit * pebble)
+            }
+            mc::MUD => {
+                let b = fbm(x, z, 10.0, 53) * 0.5 + 0.5;
+                let sheen = ((fbm(x, z, 6.0, 55) - 0.55).max(0.0) * 60.0).min(18.0);
+                let m = scale(mix(rgb(66, 52, 38), rgb(108, 88, 64), b), lit);
+                [m[0] + sheen, m[1] + sheen, m[2] + sheen]
+            }
+            mc::SNOW => {
+                let b = shade_t.v[i];
+                mix(rgb(178, 196, 218), rgb(246, 248, 252), (0.35 + 0.65 * b + tone * 0.1).clamp(0.0, 1.0))
+            }
+            mc::LAVA => {
+                let (d1, d2) = voronoi(x, z, 9.0, 61);
+                let crack = (1.0 - ((d2 - d1) / 1.4) as f32).clamp(0.0, 1.0).powf(1.5);
+                mix(scale(rgb(56, 44, 40), lit), rgb(255, 120, 30), crack)
+            }
+            mc::WOOD => {
+                // Planks a world unit and a bit wide, running east-west.
+                let row = (z / 1.3).floor() as i64;
+                let seam = (z / 1.3).rem_euclid(1.0) < 0.08;
+                let v = rand01(row, 0, 67) * 0.3;
+                let grain2 = fbm(x * 0.3, z * 4.0, 2.0, 69) * 0.08;
+                let p = scale(mix(rgb(108, 76, 46), rgb(158, 116, 72), v + 0.35 + grain2), lit);
+                if seam { scale(p, 0.6) } else { p }
+            }
+            mc::STONE => {
+                // Flagstones about two and a half units across.
+                let (gx, gz) = ((x / 2.6).floor() as i64, (z / 2.6).floor() as i64);
+                let (fx, fz) = ((x / 2.6).rem_euclid(1.0), (z / 2.6).rem_euclid(1.0));
+                let mortar = fx < 0.06 || fz < 0.06;
+                let v = rand01(gx, gz, 71) * 0.35;
+                let p = scale(mix(rgb(124, 118, 110), rgb(176, 170, 158), v + 0.3 + tone * 0.1), lit);
+                if mortar { scale(p, 0.62) } else { p }
+            }
+            mc::METAL => scale(rgb(138, 138, 142), lit * (0.92 + 0.08 * fbm(x * 0.2, z * 3.0, 3.0, 73))),
+            mc::CLOTH => scale(rgb(142, 62, 56), lit),
+            _ => {
+                let t = (0.25 + 0.75 * (shade_d.v[i] * 0.7 + shade_t.v[i] * 0.45) - 0.18 + tone * 0.08).clamp(0.0, 1.0);
+                mix(sand_d, sand_l, t)
+            }
+        };
         c = [c[0] + grain, c[1] + grain, c[2] + grain];
         // rock
         if rsoft.v[i] > 0.0 {

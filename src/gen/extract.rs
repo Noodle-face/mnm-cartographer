@@ -8,6 +8,7 @@
 //! or they occlude everything beneath them when seen from above.
 
 use super::bundle::*;
+use super::materials::MatClass;
 use std::collections::{HashMap, HashSet};
 use unity_rs_core::mesh::{read_mesh_with_collection, MeshReadLimits};
 use unity_rs_core::type_tree::TypeValue;
@@ -71,7 +72,7 @@ impl Mat4 {
         ]
     }
 
-    fn det(&self) -> f64 {
+    pub fn det(&self) -> f64 {
         let m = &self.m;
         m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
             - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
@@ -144,6 +145,10 @@ impl Hierarchy {
 }
 
 /// The Transform attached to a GameObject, if it has one.
+pub fn transform_at(env: &Env, file: usize, go: &TypeValue) -> Option<(usize, usize)> {
+    transform_of(env, file, go)
+}
+
 fn transform_of(env: &Env, file: usize, go: &TypeValue) -> Option<(usize, usize)> {
     let TypeValue::Array(comps) = field(go, "m_Component")? else { return None };
     for c in comps {
@@ -159,6 +164,9 @@ fn transform_of(env: &Env, file: usize, go: &TypeValue) -> Option<(usize, usize)
 
 pub struct Floors {
     pub tris: Vec<Tri>,
+    /// Per triangle, an index into `mat_table`, when tagging was asked for.
+    pub mats: Vec<u16>,
+    pub mat_table: Vec<MatClass>,
     /// Near-vertical faces of the zone's boundary geometry: the invisible
     /// walls that stop a player. See [`is_boundary_name`].
     pub walls: Vec<Tri>,
@@ -359,9 +367,40 @@ pub fn extract_floors(env: &Env, shared: &Shared, files: &[usize]) -> Floors {
     extract_faces(env, shared, files, 0.5)
 }
 
+/// As [`extract_floors`], with each triangle tagged by what it is made of
+/// (`Floors::mats`, indexing `Floors::mat_table`).
+pub fn extract_floors_tagged(env: &Env, shared: &Shared, files: &[usize]) -> Floors {
+    extract_inner(env, shared, files, 0.5, true)
+}
+
 /// World-space triangles whose normal has an upward component of at least
 /// `min_ny`. Below -1 keeps every face, walls and ceilings included.
 pub fn extract_faces(env: &Env, shared: &Shared, files: &[usize], min_ny: f32) -> Floors {
+    extract_inner(env, shared, files, min_ny, false)
+}
+
+/// Interns material classes into a small table; triangles carry an index.
+#[derive(Default)]
+struct Tags {
+    on: bool,
+    mats: Vec<u16>,
+    table: Vec<MatClass>,
+    index: HashMap<MatClass, u16>,
+    cache: HashMap<(usize, usize, usize), MatClass>,
+}
+
+impl Tags {
+    fn id(&mut self, c: MatClass) -> u16 {
+        if let Some(&i) = self.index.get(&c) { return i }
+        let i = self.table.len() as u16;
+        self.table.push(c);
+        self.index.insert(c, i);
+        i
+    }
+}
+
+fn extract_inner(env: &Env, shared: &Shared, files: &[usize], min_ny: f32, tagged: bool) -> Floors {
+    let mut tags = Tags { on: tagged, ..Default::default() };
     let mut out: Vec<Tri> = Vec::new();
     let mut walls: Vec<Tri> = Vec::new();
     let mut unresolved = 0usize;
@@ -448,7 +487,19 @@ pub fn extract_faces(env: &Env, shared: &Shared, files: &[usize], min_ny: f32) -
             let flip = m.det() < 0.0;
             let world: Vec<[f32; 3]> = mesh.vertices.iter().map(|v| m.apply(*v)).collect();
 
-            for sub in &mesh.sub_meshes {
+            // What each submesh is made of: the renderer's material in the
+            // same slot when it draws this very mesh, else its first.
+            let sub_tags: Vec<u16> = if tags.on {
+                let (slots, same) = super::materials::collider_classes(
+                    env, shared, go_at.0, &go, mp, &mut tags.cache);
+                (0..mesh.sub_meshes.len()).map(|k| {
+                    let c = if same { slots.get(k).or(slots.first()) } else { slots.first() };
+                    let c = c.copied().unwrap_or_default();
+                    tags.id(c)
+                }).collect()
+            } else { Vec::new() };
+
+            for (si, sub) in mesh.sub_meshes.iter().enumerate() {
                 for t in sub.indices.chunks_exact(3) {
                     let (a, b, c) = (t[0] as usize, t[1] as usize, t[2] as usize);
                     if a >= world.len() || b >= world.len() || c >= world.len() {
@@ -474,14 +525,15 @@ pub fn extract_faces(env: &Env, shared: &Shared, files: &[usize], min_ny: f32) -
                         if ny.abs() < 0.7 { walls.push([p, q, r]) }
                     } else if ny >= min_ny {
                         out.push([p, q, r]);
+                        if tags.on { tags.mats.push(sub_tags[si]) }
                     }
                 }
             }
         }
     }
-    st.terrain_tris = terrain_faces(env, files, min_ny, &skip, &mut hier, &mut out);
+    st.terrain_tris = terrain_faces(env, shared, files, min_ny, &skip, &mut hier, &mut out, &mut tags);
     let blocks = boundary_boxes(env, files, &mut hier, &mut active);
-    Floors { tris: out, walls, blocks, unresolved, stats: st }
+    Floors { tris: out, walls, blocks, unresolved, stats: st, mats: tags.mats, mat_table: tags.table }
 }
 
 const CLASS_TERRAINCOLLIDER: i32 = 154;
@@ -492,8 +544,9 @@ const CLASS_TERRAINCOLLIDER: i32 = 154;
 ///
 /// A terrain ignores its transform's rotation and scale; only the position
 /// places it. Heights are stored as 0..32766 for 0..1 of the terrain's height.
-fn terrain_faces(env: &Env, files: &[usize], min_ny: f32, skip: &HashSet<(usize, usize)>,
-                 hier: &mut Hierarchy, out: &mut Vec<Tri>) -> usize {
+#[allow(clippy::too_many_arguments)]
+fn terrain_faces(env: &Env, shared: &Shared, files: &[usize], min_ny: f32, skip: &HashSet<(usize, usize)>,
+                 hier: &mut Hierarchy, out: &mut Vec<Tri>, tags: &mut Tags) -> usize {
     let before = out.len();
     for &fi in files {
         let count = env.col.serialized_files()[fi].file.objects.len();
@@ -510,9 +563,13 @@ fn terrain_faces(env: &Env, files: &[usize], min_ny: f32, skip: &HashSet<(usize,
             // "Terrain (Depreciated)"), not ground anyone stands on.
             if !active_in_hierarchy(env, tr, &mut HashMap::new()) { continue }
             let origin = hier.world(env, tr).t;
-            let Some(td) = as_pptr(field(&tc, "m_TerrainData"))
-                .and_then(|p| env.resolve(fi, p))
-                .and_then(|a| env.read(a.0, a.1)) else { continue };
+            let Some(td_at) = as_pptr(field(&tc, "m_TerrainData")).and_then(|p| env.resolve(fi, p))
+            else { continue };
+            let Some(td) = env.read(td_at.0, td_at.1) else { continue };
+            let tag = if tags.on {
+                let c = super::materials::terrain_class(env, shared, td_at.0, &td);
+                tags.id(c)
+            } else { 0 };
             let Some(hm) = field(&td, "m_Heightmap") else { continue };
             let res = as_i64(field(hm, "m_Resolution")).unwrap_or(0) as usize;
             let scale = vec3(field(hm, "m_Scale"), 1.0, 1.0, 1.0);
@@ -531,7 +588,10 @@ fn terrain_faces(env: &Env, files: &[usize], min_ny: f32, skip: &HashSet<(usize,
                 for x in 0..res - 1 {
                     let (a, b, c, d) = (at(x, z), at(x + 1, z), at(x, z + 1), at(x + 1, z + 1));
                     for t in [[a, c, b], [b, c, d]] {
-                        if up_component(&t) >= min_ny { out.push(t) }
+                        if up_component(&t) >= min_ny {
+                            out.push(t);
+                            if tags.on { tags.mats.push(tag) }
+                        }
                     }
                 }
             }

@@ -83,6 +83,8 @@ pub struct ZoneInput<'a> {
     pub props: &'a BTreeMap<String, Vec<(f64, f64)>>,
     /// The world box to frame the map on, or None for the whole of `tris`.
     pub bbox: Option<raster::Bbox>,
+    /// Per triangle, what it is made of (see [`LoadedZone::mats`]).
+    pub tags: Option<(&'a [u16], &'a [super::materials::MatClass])>,
 }
 
 /// Build a zone's map, and a map per floor if it has floors (see
@@ -134,7 +136,7 @@ pub fn build_zone(
         if tris.is_empty() || s.skip_floors.contains(&(i + 1)) { continue }
         jobs.push((
             dir.join(super::floors::file_name(i)),
-            ZoneInput { name: z.name, tris, sea: z.sea, props: &no_props, bbox: z.bbox },
+            ZoneInput { name: z.name, tris, sea: z.sea, props: &no_props, bbox: z.bbox, tags: None },
             Style::Floor(i, f.name),
         ));
     }
@@ -247,9 +249,13 @@ fn build(
                 _ => raster::rasterize(z.tris, ppu, bbox),
             } };
         let img = match style {
-            Style::Painted => super::paint::render(&height, z.props, &super::paint::PaintOptions {
-                ppu, sea: z.sea, bbox,
-            }),
+            Style::Painted => {
+                let tags = z.tags.map(|(t, table)| (raster::rasterize_tagged(z.tris, t, ppu, bbox).1, table));
+                super::paint::render(&height, z.props, &super::paint::PaintOptions {
+                    ppu, sea: z.sea, bbox,
+                    classes: tags.as_ref().map(|(t, table)| (t.as_slice(), *table)),
+                })
+            }
             _ => {
                 let r = ink::render(&height, &edges, &ink::InkOptions {
                     ppu,
@@ -366,10 +372,20 @@ pub struct LoadedZone {
     pub bounds: &'static str,
     /// Every prop, unthinned: the painted style draws each palm.
     pub all_props: BTreeMap<String, Vec<(f64, f64)>>,
+    /// Per triangle, an index into `mat_table`: what the surface is made
+    /// of. Empty unless materials were asked for (the painted style).
+    pub mats: Vec<u16>,
+    pub mat_table: Vec<super::materials::MatClass>,
 }
 
 pub fn load_zone(env: &super::bundle::Env, shared: &super::bundle::Shared,
                  group: &super::zones::Group) -> LoadedZone {
+    load_zone_with(env, shared, group, false)
+}
+
+/// As [`load_zone`]; `tagged` also records what each surface is made of.
+pub fn load_zone_with(env: &super::bundle::Env, shared: &super::bundle::Shared,
+                      group: &super::zones::Group, tagged: bool) -> LoadedZone {
     let idx = env.scene_index();
     let mut files: Vec<usize> = Vec::new();
     for path in group.scenes() {
@@ -382,7 +398,8 @@ pub fn load_zone(env: &super::bundle::Env, shared: &super::bundle::Shared,
     files.sort_unstable();
     files.dedup();
     let floors = { let _t = super::Timer::start("load: extract");
-        super::extract::extract_floors(env, shared, &files) };
+        if tagged { super::extract::extract_floors_tagged(env, shared, &files) }
+        else { super::extract::extract_floors(env, shared, &files) } };
     let _t = super::Timer::start("load: scene, bounds");
     let sea = scene::find_sea_level(env, &files);
     let all_props = scene::scene_props(env, &files);
@@ -391,21 +408,32 @@ pub fn load_zone(env: &super::bundle::Env, shared: &super::bundle::Shared,
         .collect();
     if floors.tris.is_empty() {
         return LoadedZone { tris: floors.tris, sea, props, bbox: (0.0, 0.0, 0.0, 0.0), bounds: "all",
-                            all_props };
+                            all_props, mats: Vec::new(), mat_table: Vec::new() };
     }
     let lm = super::extract::landmarks(env, &files);
-    let tris = super::bounds::drop_strays(&floors.tris, &lm.objects);
-    let tris = super::bounds::drop_sky_planes(&tris, raster::auto_bbox(&tris));
+    // Every trimming step yields a keep-mask, applied to the triangles and
+    // to their material tags alike so the two stay aligned.
+    use super::bounds::apply;
+    let (mut tris, mut mats) = (floors.tris, floors.mats);
+    let keep = |tris: &mut Vec<Tri>, mats: &mut Vec<u16>, k: Vec<bool>| {
+        if !mats.is_empty() { *mats = apply(mats, &k) }
+        *tris = apply(tris, &k);
+    };
+    let k = super::bounds::strays_keep(&tris, &lm.objects);
+    keep(&mut tris, &mut mats, k);
+    let k = super::bounds::sky_keep(&tris, raster::auto_bbox(&tris));
+    keep(&mut tris, &mut mats, k);
     let full = raster::auto_bbox(&tris);
-    let (tris, bbox, bounds) = match super::bounds::play_region(&tris, &floors.walls, &floors.blocks,
+    let (bbox, bounds) = match super::bounds::play_region(&tris, &floors.walls, &floors.blocks,
                                                          &lm, sea, full) {
         Some(r) => {
             let b = r.bbox();
-            let clipped = super::bounds::clip_region(&tris, &r);
+            let k = super::bounds::region_keep(&tris, &r);
+            keep(&mut tris, &mut mats, k);
             // The frame is the region, but never wider than the geometry.
-            (clipped, (b.0.max(full.0), b.1.min(full.1), b.2.max(full.2), b.3.min(full.3)), r.method)
+            ((b.0.max(full.0), b.1.min(full.1), b.2.max(full.2), b.3.min(full.3)), r.method)
         }
-        None => (tris, full, "all"),
+        None => (full, "all"),
     };
-    LoadedZone { tris, sea, props, bbox, bounds, all_props }
+    LoadedZone { tris, sea, props, bbox, bounds, all_props, mats, mat_table: floors.mat_table }
 }

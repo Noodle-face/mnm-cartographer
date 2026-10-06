@@ -124,7 +124,7 @@ impl Job {
                     let res = tiles::build_zone(
                         &out,
                         &tiles::ZoneInput {
-                            name: &name, tris: &tris, sea, props: &props, bbox: Some(bbox),
+                            name: &name, tris: &tris, sea, props: &props, bbox: Some(bbox), tags: None,
                         },
                         &tset,
                         |level, levels| {
@@ -392,14 +392,15 @@ impl PaintJob {
                 say("reading the game files");
                 let env = super::bundle::Env::open(&l.bundle).map_err(|e| e.to_string())?;
                 let shared = super::bundle::Shared::open(&install);
-                let lz = tiles::load_zone(&env, &shared, &l.group);
+                let lz = tiles::load_zone_with(&env, &shared, &l.group, true);
                 if lz.tris.is_empty() { return Err("no walkable geometry".into()) }
                 let [ax, bx, az, bz] = frame.extent;
                 let mut level = |done: usize, total: usize| say(&format!("painting level {done}/{total}"));
                 say(&format!("painting level 0/{}", frame.zooms));
                 tiles::build_painted(&out,
                     &tiles::ZoneInput { name: &z, tris: &lz.tris, sea: lz.sea,
-                                        props: &lz.all_props, bbox: None },
+                                        props: &lz.all_props, bbox: None,
+                                        tags: Some((&lz.mats, &lz.mat_table)) },
                     ((ax, bx, az, bz), frame.base_ppu), frame.zooms, &mut level)
                     .map_err(|e| e.to_string())?;
                 Ok(out)

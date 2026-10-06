@@ -35,11 +35,12 @@ fn seed_assets(dir: &std::path::Path) {
     }
 }
 mod paper;
+mod icons;
 mod markers;
 mod pyramid;
 mod watch;
 
-use markers::{kind, MarkerSet, Shape, KINDS};
+use markers::{kind, MarkerSet, KINDS};
 use pyramid::{discover, scene_to_world, world_to_scene, Pyramid};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -1086,38 +1087,6 @@ fn wrap_angle(a: f32) -> f32 {
     if a > PI { a - TAU } else { a }
 }
 
-fn shape_points(shape: Shape, c: egui::Pos2, r: f32) -> Vec<egui::Pos2> {
-    let poly = |n: usize, off: f32| -> Vec<egui::Pos2> {
-        (0..n).map(|i| {
-            let a = off + std::f32::consts::TAU * i as f32 / n as f32;
-            egui::pos2(c.x + r * a.cos(), c.y + r * a.sin())
-        }).collect()
-    };
-    match shape {
-        Shape::Circle => poly(16, 0.0),
-        Shape::Square => poly(4, std::f32::consts::FRAC_PI_4),
-        Shape::Diamond => poly(4, 0.0),
-        Shape::Triangle => poly(3, -std::f32::consts::FRAC_PI_2),
-        Shape::Pentagon => poly(5, -std::f32::consts::FRAC_PI_2),
-        Shape::Hexagon => poly(6, 0.0),
-        Shape::Star => (0..10).map(|i| {
-            let rr = if i % 2 == 0 { r } else { r * 0.45 };
-            let a = -std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * i as f32 / 5.0;
-            egui::pos2(c.x + rr * a.cos(), c.y + rr * a.sin())
-        }).collect(),
-        Shape::Cross => {
-            let w = r * 0.36;
-            vec![
-                egui::pos2(c.x - w, c.y - r), egui::pos2(c.x + w, c.y - r),
-                egui::pos2(c.x + w, c.y - w), egui::pos2(c.x + r, c.y - w),
-                egui::pos2(c.x + r, c.y + w), egui::pos2(c.x + w, c.y + w),
-                egui::pos2(c.x + w, c.y + r), egui::pos2(c.x - w, c.y + r),
-                egui::pos2(c.x - w, c.y + w), egui::pos2(c.x - r, c.y + w),
-                egui::pos2(c.x - r, c.y - w), egui::pos2(c.x - w, c.y - w),
-            ]
-        }
-    }
-}
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _f: &mut eframe::Frame) {
@@ -1449,7 +1418,7 @@ impl App {
     /// Index of the marker under a screen position, if any.
     fn marker_at(&self, p: egui::Pos2) -> Option<usize> {
         self.mset.items.iter().position(|m| {
-            (self.world_to_screen(m.x, m.z) - p).length() < 11.0
+            (self.world_to_screen(m.x, m.z) - p).length() < icons::RADIUS + 2.0
         })
     }
 
@@ -1725,17 +1694,15 @@ impl App {
                     let c = self.world_to_screen(m.x, m.z);
                     if !vp.expand(24.0).contains(c) { continue }
                     let ki = kind(&m.kind);
-                    let pts = shape_points(ki.shape, c, 8.0);
-                    painter.add(egui::Shape::convex_polygon(pts.clone(), ki.color,
-                        egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(0x15, 0x12, 0x0e))));
+                    icons::draw(&painter, ki.key, ki.color, c, icons::RADIUS);
                     // Labels overlap badly at low zoom; past a threshold the
                     // glyphs alone carry it and the tooltip gives the rest.
                     if !m.label.is_empty() && show_labels {
-                        painter.text(c + egui::vec2(11.0, -9.0), egui::Align2::LEFT_TOP,
+                        painter.text(c + egui::vec2(icons::RADIUS + 4.0, -icons::RADIUS), egui::Align2::LEFT_TOP,
                             &m.label, egui::FontId::proportional(11.0),
                             egui::Color32::from_rgb(0x1b, 0x15, 0x10));
                     }
-                    if pointer.map_or(false, |p| (p - c).length() < 11.0) { hovered = Some(i) }
+                    if pointer.map_or(false, |p| (p - c).length() < icons::RADIUS + 2.0) { hovered = Some(i) }
                 }
 
                 // A hovered marker shows its pair, so a teleporter link is
@@ -1762,8 +1729,8 @@ impl App {
                             ui.label(egui::RichText::new(
                                 if m.label.is_empty() { ki.label } else { &m.label }).strong());
                             ui.horizontal(|ui| {
-                                let (r, _) = ui.allocate_exact_size(egui::vec2(9.0, 9.0), egui::Sense::hover());
-                                ui.painter().rect_filled(r, 1.0, ki.color);
+                                let (r, _) = ui.allocate_exact_size(egui::vec2(13.0, 13.0), egui::Sense::hover());
+                                icons::draw(ui.painter(), ki.key, ki.color, r.center(), 6.0);
                                 ui.label(egui::RichText::new(format!(
                                     "{}   X {:.0}, Z {:.0}", ki.label, m.x, m.z)).size(11.0).weak());
                             });
@@ -2047,9 +2014,7 @@ impl App {
         for (i, (k, n)) in counts.iter().enumerate() {
             let cy = rect.top() + 10.0 + row * (i as f32 + 1.0) + 6.0;
             let ki = kind(k);
-            p.add(egui::Shape::convex_polygon(
-                shape_points(ki.shape, egui::pos2(rect.left() + 22.0, cy), 7.0),
-                ki.color, egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(0x15, 0x12, 0x0e))));
+            icons::draw(p, ki.key, ki.color, egui::pos2(rect.left() + 22.0, cy), 8.5);
             p.text(egui::pos2(rect.left() + 40.0, cy), egui::Align2::LEFT_CENTER,
                 format!("{}  {n}", ki.label), egui::FontId::proportional(11.0), INK);
         }
@@ -2246,7 +2211,7 @@ fn main() -> eframe::Result<()> {
             "--extract" => 2,
             "--dump-tris" | "--dump-all-tris" => 3,
             "--classes" | "--terrains" | "--externals" => 2,
-            "--dump-zones" | "--paint" => 1,
+            "--dump-zones" | "--paint" | "--materials" => 1,
             "--render-tris" => 7,
             "--render" => 4,
             _ => 0,
@@ -2317,6 +2282,32 @@ fn main() -> eframe::Result<()> {
             println!("bounds x {:.1}..{:.1}  y {:.1}..{:.1}  z {:.1}..{:.1}",
                      lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
         }
+        return Ok(());
+    }
+
+    // Inventory of what every zone's walkable surfaces are made of, as
+    // <dir>/<slug>.materials.json. See gen::materials.
+    if let Some(i) = args.iter().position(|a| a == "--materials") {
+        let dir = PathBuf::from(args.get(i + 1).expect("--materials <dir>"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let install = gen::job::Settings::load().resolve().expect("game install not found");
+        let located = gen::zones::survey_cached(&install, |_, _, _| {});
+        let no_cancel = std::sync::atomic::AtomicBool::new(false);
+        let out = &dir;
+        gen::job::run_zones(located, 3, &install, &gen::job::maps_dir(), &no_cancel, |env, shared, l| {
+            let t = std::time::Instant::now();
+            let idx = env.scene_index();
+            let mut files: Vec<usize> = l.group.scenes().iter()
+                .filter_map(|p| idx.get(*p).and_then(|c| env.file_index(c))).collect();
+            files.sort_unstable();
+            files.dedup();
+            let inv = gen::materials::inventory(env, shared, &files);
+            let slug = gen::zones::slug(&l.zone);
+            std::fs::write(out.join(format!("{slug}.materials.json")),
+                serde_json::to_string_pretty(&inv).unwrap()).unwrap();
+            println!("{:<22} {:>4} materials  {:>3} terrain layers  {:.1}s",
+                     l.zone, inv.materials.len(), inv.terrain_layers.len(), t.elapsed().as_secs_f32());
+        }, |l, m| eprintln!("{}: {m}", l.zone));
         return Ok(());
     }
 
@@ -2855,7 +2846,7 @@ fn main() -> eframe::Result<()> {
             }
             match gen::tiles::build_zone(&dest,
                 &gen::tiles::ZoneInput { name: &l.zone, tris: &tris, sea, props: &props,
-                                         bbox: Some(bbox) },
+                                         bbox: Some(bbox), tags: None },
                 &gen::tiles::Settings {
                     floors: !args.iter().any(|a| a == "--no-floors"),
                     floors_only,

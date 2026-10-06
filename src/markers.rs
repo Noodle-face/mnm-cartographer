@@ -16,36 +16,24 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum Shape {
-    Circle,
-    Star,
-    Diamond,
-    Square,
-    Hexagon,
-    Pentagon,
-    Triangle,
-    Cross,
-}
 
 pub struct KindInfo {
     pub key: &'static str,
     /// Capitalised name for the UI; `key` stays lowercase in the JSON.
     pub label: &'static str,
     pub color: egui::Color32,
-    pub shape: Shape,
     pub about: &'static str,
 }
 
 pub const KINDS: &[KindInfo] = &[
-    KindInfo { key: "camp", label: "Camp",     color: egui::Color32::from_rgb(0x2a, 0x78, 0xd6), shape: Shape::Circle,   about: "A pull spot or sit-and-fight camp" },
-    KindInfo { key: "named", label: "Named spawn",    color: egui::Color32::from_rgb(0xeb, 0x68, 0x34), shape: Shape::Star,     about: "Named or rare spawn" },
-    KindInfo { key: "harvest", label: "Harvest",  color: egui::Color32::from_rgb(0x00, 0x83, 0x00), shape: Shape::Diamond,  about: "Resource node: ore, herb, wood" },
-    KindInfo { key: "merchant", label: "Merchant", color: egui::Color32::from_rgb(0x4a, 0x3a, 0xa7), shape: Shape::Square,   about: "Vendor, banker or trainer" },
-    KindInfo { key: "exit", label: "Exit",     color: egui::Color32::from_rgb(0x1b, 0xaf, 0x7a), shape: Shape::Hexagon,  about: "Zone connection, stairs or portal" },
-    KindInfo { key: "quest", label: "Quest",    color: egui::Color32::from_rgb(0xed, 0xa1, 0x00), shape: Shape::Pentagon, about: "Quest giver or turn-in" },
-    KindInfo { key: "danger", label: "Danger",   color: egui::Color32::from_rgb(0xa0, 0x1b, 0x22), shape: Shape::Triangle, about: "Avoid: KOS mob, roamer, drop or trap" },
-    KindInfo { key: "note", label: "Note",     color: egui::Color32::from_rgb(0xd4, 0x55, 0x9a), shape: Shape::Cross,    about: "Anything else worth remembering" },
+    KindInfo { key: "camp", label: "Camp",     color: egui::Color32::from_rgb(0x2a, 0x78, 0xd6), about: "A pull spot or sit-and-fight camp" },
+    KindInfo { key: "named", label: "Named spawn",    color: egui::Color32::from_rgb(0xeb, 0x68, 0x34), about: "Named or rare spawn" },
+    KindInfo { key: "harvest", label: "Harvest",  color: egui::Color32::from_rgb(0x00, 0x83, 0x00), about: "Resource node: ore, herb, wood" },
+    KindInfo { key: "merchant", label: "Merchant", color: egui::Color32::from_rgb(0x4a, 0x3a, 0xa7), about: "Vendor, banker or trainer" },
+    KindInfo { key: "exit", label: "Exit",     color: egui::Color32::from_rgb(0x1b, 0xaf, 0x7a), about: "Zone connection, stairs or portal" },
+    KindInfo { key: "quest", label: "Quest",    color: egui::Color32::from_rgb(0xed, 0xa1, 0x00), about: "Quest giver or turn-in" },
+    KindInfo { key: "danger", label: "Danger",   color: egui::Color32::from_rgb(0xa0, 0x1b, 0x22), about: "Avoid: KOS mob, roamer, drop or trap" },
+    KindInfo { key: "note", label: "Note",     color: egui::Color32::from_rgb(0xd4, 0x55, 0x9a), about: "Anything else worth remembering" },
 ];
 
 /// A fresh marker id.

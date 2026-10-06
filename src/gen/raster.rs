@@ -97,6 +97,18 @@ pub fn rasterize(tris: &[Tri], ppu: f64, bbox: Bbox) -> Grid {
     finish(buf)
 }
 
+/// As [`rasterize`], and the tag of the surface seen at each pixel -- the
+/// one the height came from. `u16::MAX` where nothing was hit.
+pub fn rasterize_tagged(tris: &[Tri], tags: &[u16], ppu: f64, bbox: Bbox) -> (Grid, Vec<u16>) {
+    let (w, h) = raster_size(ppu, bbox);
+    let mut buf = Grid::new(w, h, f32::NEG_INFINITY);
+    let mut tag = vec![u16::MAX; w * h];
+    for_each_sample_of(tris, ppu, bbox, |ti, i, y| {
+        if y > buf.v[i] { buf.v[i] = y; tag[i] = tags[ti] }
+    });
+    (finish(buf), tag)
+}
+
 /// A floor plan of a slab of a multi-storey zone: the LOWEST surface in each
 /// pixel, so a room shows rather than the roof over it -- unless something
 /// lies more than `over` above that surface, which is a bridge or walkway
@@ -150,11 +162,16 @@ fn finish(mut buf: Grid) -> Grid {
 /// pixel centre still marks the pixel holding its centroid, so thin
 /// geometry (a plank, a ledge) is not lost.
 pub(crate) fn for_each_sample(tris: &[Tri], ppu: f64, bbox: Bbox, mut f: impl FnMut(usize, f32)) {
+    for_each_sample_of(tris, ppu, bbox, |_, i, y| f(i, y))
+}
+
+/// As [`for_each_sample`], also passing the triangle's index.
+pub(crate) fn for_each_sample_of(tris: &[Tri], ppu: f64, bbox: Bbox, mut f: impl FnMut(usize, usize, f32)) {
     let (minx, maxx, minz, maxz) = bbox;
     let (w, h) = raster_size(ppu, bbox);
     let (wf, hf) = (w as f64, h as f64);
 
-    for t in tris {
+    for (ti, t) in tris.iter().enumerate() {
         // Pixel space: x right, z "up" in rows (row 0 = south).
         let p: [(f64, f64, f64); 3] = [0, 1, 2].map(|k| (
             (t[k][0] as f64 - minx) * ppu,
@@ -182,7 +199,7 @@ pub(crate) fn for_each_sample(tris: &[Tri], ppu: f64, bbox: Bbox, mut f: impl Fn
                     // A hair of tolerance so shared edges leave no seam.
                     if l0 < -1e-9 || l1 < -1e-9 || l2 < -1e-9 { continue }
                     let y = p[0].2 * l0 + p[1].2 * l1 + p[2].2 * l2;
-                    f(cz as usize * w + cx as usize, y as f32);
+                    f(ti, cz as usize * w + cx as usize, y as f32);
                     hit = true;
                 }
             }
@@ -190,7 +207,7 @@ pub(crate) fn for_each_sample(tris: &[Tri], ppu: f64, bbox: Bbox, mut f: impl Fn
         if !hit {
             let (cx, cz) = ((p[0].0 + p[1].0 + p[2].0) / 3.0, (p[0].1 + p[1].1 + p[2].1) / 3.0);
             if cx >= 0.0 && cz >= 0.0 && cx < wf && cz < hf {
-                f(cz as usize * w + cx as usize, ((p[0].2 + p[1].2 + p[2].2) / 3.0) as f32);
+                f(ti, cz as usize * w + cx as usize, ((p[0].2 + p[1].2 + p[2].2) / 3.0) as f32);
             }
         }
     }

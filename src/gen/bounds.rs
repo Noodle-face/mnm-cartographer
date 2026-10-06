@@ -353,7 +353,7 @@ fn fill_holes(inside: &mut [bool], w: usize, h: usize) {
 /// scraps of backdrop that happened to lie near the edge -- a strip of
 /// terrain beside Scarwood -- rather than a little more of the zone's own
 /// cliffs and shore.
-pub fn clip_region(tris: &[Tri], r: &Region) -> Vec<Tri> {
+pub fn region_keep(tris: &[Tri], r: &Region) -> Vec<bool> {
     let cell_of = |t: &Tri| r.idx(((t[0][0] + t[1][0] + t[2][0]) / 3.0) as f64,
                                   ((t[0][2] + t[1][2] + t[2][2]) / 3.0) as f64);
     // Cells in the margin that hold geometry.
@@ -375,7 +375,7 @@ pub fn clip_region(tris: &[Tri], r: &Region) -> Vec<Tri> {
             }
         }
     }
-    tris.iter().filter(|t| cell_of(t).is_some_and(|i| keep[i])).copied().collect()
+    tris.iter().map(|t| cell_of(t).is_some_and(|i| keep[i])).collect()
 }
 
 /// Drop geometry that sits alone far from the rest of the zone.
@@ -389,8 +389,8 @@ pub fn clip_region(tris: &[Tri], r: &Region) -> Vec<Tri> {
 /// 15% and has next to none of the objects. Being small is not enough: a
 /// sewer's tunnel sections are each small, and Party City keeps its busiest
 /// spot on a small patch of ground well away from the rest.
-pub fn drop_strays(tris: &[Tri], objects: &[[f64; 2]]) -> Vec<Tri> {
-    if tris.len() < 4 { return tris.to_vec() }
+pub fn strays_keep(tris: &[Tri], objects: &[[f64; 2]]) -> Vec<bool> {
+    if tris.len() < 4 { return vec![true; tris.len()] }
     let (mut x0, mut x1, mut z0, mut z1) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
     for t in tris {
         for v in t {
@@ -452,7 +452,7 @@ pub fn drop_strays(tris: &[Tri], objects: &[[f64; 2]]) -> Vec<Tri> {
             None => (c.1, c.2, c.3, c.4),
             Some(a) => (a.0.min(c.1), a.1.max(c.2), a.2.min(c.3), a.3.max(c.4)),
         }));
-    let Some(m) = main else { return tris.to_vec() };
+    let Some(m) = main else { return vec![true; tris.len()] };
     let grow = (((m.1 - m.0).max(m.3 - m.2)) as f64 * 0.15) as isize;
     let (mx0, mx1, mz0, mz1) = (m.0 as isize - grow, m.1 as isize + grow,
                                 m.2 as isize - grow, m.3 as isize + grow);
@@ -463,15 +463,15 @@ pub fn drop_strays(tris: &[Tri], objects: &[[f64; 2]]) -> Vec<Tri> {
                 || (c.4 as isize) < mz0 || (c.3 as isize) > mz1))
         .map(|(r, _)| *r)
         .collect();
-    if stray.is_empty() { return tris.to_vec() }
-    tris.iter().filter(|t| {
+    if stray.is_empty() { return vec![true; tris.len()] }
+    tris.iter().map(|t| {
         let cx = (t[0][0] + t[1][0] + t[2][0]) as f64 / 3.0;
         let cz = (t[0][2] + t[1][2] + t[2][2]) as f64 / 3.0;
         let (gx, gz) = (((cx - x0) * ppu) as usize, ((cz - z0) * ppu) as usize);
         let i = gz.min(h - 1) * w + gx.min(w - 1);
         // A centroid can fall in an empty cell of a thin triangle; keep it.
         !occ[i] || !stray.contains(&uf.find(i))
-    }).copied().collect()
+    }).collect()
 }
 
 /// Drop vast flat triangles lying over the zone: ceiling or boundary planes.
@@ -482,16 +482,16 @@ pub fn drop_strays(tris: &[Tri], objects: &[[f64; 2]]) -> Vec<Tri> {
 /// highest surface -- one such plane blanks the whole map. A triangle goes
 /// if it alone covers over 5% of `frame` and sits above 95% of the zone's
 /// other walkable area. Large planes lower down (water levels) stay.
-pub fn drop_sky_planes(tris: &[Tri], frame: Bbox) -> Vec<Tri> {
+pub fn sky_keep(tris: &[Tri], frame: Bbox) -> Vec<bool> {
     let frame_area = ((frame.1 - frame.0) * (frame.3 - frame.2)).max(1.0);
     let area = |t: &Tri| 0.5 * ((t[1][0] - t[0][0]) as f64 * (t[2][2] - t[0][2]) as f64
         - (t[2][0] - t[0][0]) as f64 * (t[1][2] - t[0][2]) as f64).abs();
     let y = |t: &Tri| (t[0][1] + t[1][1] + t[2][1]) / 3.0;
     let huge = |t: &Tri| area(t) > 0.05 * frame_area;
-    if !tris.iter().any(huge) { return tris.to_vec() }
+    if !tris.iter().any(huge) { return vec![true; tris.len()] }
     // Area-weighted 95th percentile of the other triangles' heights.
     let mut ys: Vec<(f32, f64)> = tris.iter().filter(|t| !huge(t)).map(|t| (y(t), area(t))).collect();
-    if ys.is_empty() { return tris.to_vec() }
+    if ys.is_empty() { return vec![true; tris.len()] }
     ys.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     let total: f64 = ys.iter().map(|p| p.1).sum();
     let mut acc = 0.0;
@@ -500,7 +500,7 @@ pub fn drop_sky_planes(tris: &[Tri], frame: Bbox) -> Vec<Tri> {
         acc += p.1;
         if acc >= 0.95 * total { top = p.0; break }
     }
-    tris.iter().filter(|t| !(huge(t) && y(t) > top)).copied().collect()
+    tris.iter().map(|t| !(huge(t) && y(t) > top)).collect()
 }
 
 struct UnionFind { parent: Vec<usize> }
@@ -518,4 +518,9 @@ impl UnionFind {
         let (ra, rb) = (self.find(a), self.find(b));
         if ra != rb { self.parent[ra] = rb }
     }
+}
+
+/// The triangles a keep-mask from this module keeps.
+pub fn apply<T: Copy>(v: &[T], keep: &[bool]) -> Vec<T> {
+    v.iter().zip(keep).filter(|(_, k)| **k).map(|(t, _)| *t).collect()
 }

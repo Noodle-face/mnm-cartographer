@@ -107,8 +107,10 @@ the map, so north is always readable.
 **Experimental → Paint this map** in the sidebar renders the open zone in a
 full-colour painted style from your game files, in the background, in about
 half a minute. **Show painted style** then switches between it and the inked
-map; markers sit in the same place on both. The palette is desert, so it suits
-sandy zones best for now.
+map; markers sit in the same place on both. Each surface is painted by what it
+is made of -- sand, rock, grass, dirt, mud, snow, lava, water, wood, built stone
+-- sorted from the names of the game's own materials, with a surface's blend
+layers showing as rock on steep ground and as patches elsewhere.
 
 The readout is in **game world coordinates**. Markers are stored in world space,
 so they stay put across zoom levels.
@@ -125,21 +127,22 @@ not positions, so most of these are yours to place as you find them.
 
 ### Marker kinds
 
-| | shape | meaning |
+| | icon | meaning |
 |---|---|---|
-| camp | circle | A pull spot or sit-and-fight camp |
-| named | star | Named or rare spawn |
-| harvest | diamond | Resource node: ore, herb, wood |
-| merchant | square | Vendor, banker or trainer |
-| exit | hexagon | Zone connection, stairs or portal |
-| quest | pentagon | Quest giver or turn-in |
-| danger | triangle | Avoid: KOS mob, roamer, drop or trap |
-| note | cross | Anything else worth remembering |
+| camp | tent | A pull spot or sit-and-fight camp |
+| named | crown | Named or rare spawn |
+| harvest | leaf | Resource node: ore, herb, wood |
+| merchant | coin | Vendor, banker or trainer |
+| exit | arrow | Zone connection, stairs or portal |
+| quest | ! | Quest giver or turn-in |
+| danger | skull | Avoid: KOS mob, roamer, drop or trap |
+| note | page | Anything else worth remembering |
 
-Shape carries identity, not colour: eight categorical colours cannot all be
-told apart (the best assignment scores a worst-pair OKLab dE of 13.7 against a
-floor of 15, and 3.9 under simulated deuteranopia), so the silhouette does the
-work and colour reinforces it.
+Every marker is the same round badge, so none stands out by size; the glyph
+carries identity, not colour: eight categorical colours cannot all be told
+apart (the best assignment scores a worst-pair OKLab dE of 13.7 against a floor
+of 15, and 3.9 under simulated deuteranopia), so the glyph does the work and
+colour reinforces it.
 
 Markers are plain JSON in `markers/<zone>.json`, in world coordinates — diff
 them, share them, or hand-edit them.
