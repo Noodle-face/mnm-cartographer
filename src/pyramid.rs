@@ -1,8 +1,15 @@
 //! Tile pyramids: one SQLite container per zone.
 //!
-//! Scene coordinates are WORLD units with Z negated, so +Z (north) is up on
-//! screen. Keeping the scene in world units -- not in the pixels of some zoom
-//! level -- is what lets markers stay put when the level under them changes.
+//! Scene coordinates are WORLD units turned so north is up on screen. Keeping
+//! the scene in world units -- not in the pixels of some zoom level -- is what
+//! lets markers stay put when the level under them changes.
+//!
+//! North is world +X, and east -Z. The game draws no compass, so north is the
+//! community's: the wiki's world map of Calafrey and Szurr is drawn north-up,
+//! and every zone's backdrop scenery of its neighbours lies in the direction
+//! that map gives them only under this orientation (median error 12 degrees
+//! over 22 neighbour pairs; +Z north, assumed before, was off by 90). Maps are
+//! still rendered with +Z at the top of the raster; the viewer turns them.
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
@@ -26,6 +33,9 @@ pub struct Pyramid {
     pub levels: Vec<Level>,
     /// For one floor of a multi-storey zone: its number (1 = lowest) and name.
     pub floor: Option<(usize, String)>,
+    /// Symbols and lighting were drawn for the corrected north. Maps built
+    /// before 0.0.7 show palms and tents on their sides until rebuilt.
+    pub upright: bool,
     conn: Connection,
 }
 
@@ -56,15 +66,14 @@ impl Pyramid {
         let floor = meta("floor").ok().and_then(|n| n.parse().ok())
             .map(|n| (n, meta("floor_name").unwrap_or_default()));
 
-        Ok(Self { path: path.to_path_buf(), name, tile, extent, levels, floor, conn })
+        let upright = meta("north").is_ok_and(|n| n == "x");
+
+        Ok(Self { path: path.to_path_buf(), name, tile, extent, levels, floor, upright, conn })
     }
 
     pub fn scene_rect(&self) -> egui::Rect {
         let [ax, bx, az, bz] = self.extent;
-        egui::Rect::from_min_max(
-            egui::pos2(ax as f32, -bz as f32),
-            egui::pos2(bx as f32, -az as f32),
-        )
+        egui::Rect::from_two_pos(world_to_scene(ax, az), world_to_scene(bx, bz))
     }
 
     /// Finest level whose native resolution still exceeds what is on screen.
@@ -124,11 +133,28 @@ impl Pyramid {
     }
 }
 
+/// Screen right is east (-Z); screen down is south (-X).
 pub fn world_to_scene(wx: f64, wz: f64) -> egui::Pos2 {
-    egui::pos2(wx as f32, -wz as f32)
+    egui::pos2(-wz as f32, -wx as f32)
 }
 pub fn scene_to_world(p: egui::Pos2) -> (f64, f64) {
-    (p.x as f64, -p.y as f64)
+    (-p.y as f64, -p.x as f64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn north_is_up_and_east_is_right() {
+        let o = world_to_scene(0.0, 0.0);
+        // +X is north: up the screen, so smaller y.
+        assert!(world_to_scene(100.0, 0.0).y < o.y);
+        // -Z is east: right on the screen.
+        assert!(world_to_scene(0.0, -100.0).x > o.x);
+        let (x, z) = scene_to_world(world_to_scene(123.5, -45.25));
+        assert!((x - 123.5).abs() < 1e-3 && (z + 45.25).abs() < 1e-3);
+    }
 }
 
 /// The floor maps of the zone map at `map`, lowest first. Empty for a zone

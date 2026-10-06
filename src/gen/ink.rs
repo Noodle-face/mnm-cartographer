@@ -435,8 +435,17 @@ impl Rgb {
     }
 }
 
-/// Palm, scrub, tent and campfire symbols at their real positions. Drawn on
-/// the finished sheet, where row 0 is north.
+/// Where a symbol's offset lands on the raster. Symbols are designed upright
+/// on screen -- `dx` right, `dy` down -- but the raster keeps +Z at its top
+/// while the viewer turns it so north, world +X, is up: screen up is raster
+/// right, and screen right is raster down.
+pub fn upright(px: f32, py: f32, dx: f32, dy: f32) -> (f32, f32) {
+    (px - dy, py + dx)
+}
+
+/// Palm, scrub, tent and campfire symbols at their real positions, upright
+/// once the viewer turns the sheet north-up. Drawn on the finished sheet,
+/// where row 0 is +Z.
 pub fn draw_props(
     img: &mut Rgb,
     extent: (f64, f64, f64, f64),
@@ -454,12 +463,17 @@ pub fn draw_props(
     let r = (4.2 * ppu.min(2.0)).max(3.0) as f32;
     let ink = PROP_INK;
 
+    let seg = |img: &mut Rgb, px: f32, py: f32, a: (f32, f32), b: (f32, f32)| {
+        let (ax, ay) = upright(px, py, a.0, a.1);
+        let (bx, by) = upright(px, py, b.0, b.1);
+        img.line(ax, ay, bx, by, ink);
+    };
     for (x, z) in props.get("tree").map(|v| v.as_slice()).unwrap_or(&[]) {
         let (px, py) = to_px(*x, *z);
-        img.line(px, py, px, py - r * 1.5, ink); // trunk
+        seg(img, px, py, (0.0, 0.0), (0.0, -r * 1.5)); // trunk
         for a in [-150.0f32, -115.0, -65.0, -30.0] {
             let t = a.to_radians();
-            img.line(px, py - r * 1.5, px + r * 1.15 * t.cos(), py - r * 1.5 + r * 1.15 * t.sin(), ink);
+            seg(img, px, py, (0.0, -r * 1.5), (r * 1.15 * t.cos(), -r * 1.5 + r * 1.15 * t.sin()));
         }
     }
     for (x, z) in props.get("scrub").map(|v| v.as_slice()).unwrap_or(&[]) {
@@ -468,19 +482,20 @@ pub fn draw_props(
     }
     for (x, z) in props.get("tent").map(|v| v.as_slice()).unwrap_or(&[]) {
         let (px, py) = to_px(*x, *z);
-        let p = [(px, py - r * 1.5), (px + r, py + r * 0.5), (px - r, py + r * 0.5)];
+        let p = [(0.0, -r * 1.5), (r, r * 0.5), (-r, r * 0.5)]
+            .map(|(dx, dy)| upright(px, py, dx, dy));
         img.fill_tri(p, [238.0 / 255.0, 229.0 / 255.0, 206.0 / 255.0]);
         for i in 0..3 {
             let (a, b) = (p[i], p[(i + 1) % 3]);
             img.line(a.0, a.1, b.0, b.1, ink);
         }
-        img.line(px, py - r * 1.5, px, py + r * 0.5, ink);
+        seg(img, px, py, (0.0, -r * 1.5), (0.0, r * 0.5));
     }
     for (x, z) in props.get("fire").map(|v| v.as_slice()).unwrap_or(&[]) {
         let (px, py) = to_px(*x, *z);
         for a in [-90.0f32, -140.0, -40.0] {
             let t = a.to_radians();
-            img.line(px, py, px + r * 0.8 * t.cos(), py + r * 0.8 * t.sin(), ink);
+            seg(img, px, py, (0.0, 0.0), (r * 0.8 * t.cos(), r * 0.8 * t.sin()));
         }
     }
 }

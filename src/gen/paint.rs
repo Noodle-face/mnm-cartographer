@@ -141,13 +141,14 @@ fn as_grid(m: &Mask) -> Grid {
     Grid { w: m.w, h: m.h, v: m.v.iter().map(|&b| if b { 1.0 } else { 0.0 }).collect() }
 }
 
-/// Lambertian shading of a height field (world units) seen from the
-/// north-west, in raster space where row 0 is south.
+/// Lambertian shading of a height field (world units) lit from the
+/// north-west, in raster space where row 0 is -Z. North is world +X and west
+/// +Z, so north-west is up both raster axes: azimuth 45 in raster terms.
 fn hillshade(z: &Grid, ppu: f64, alt_deg: f32) -> Grid {
     let (gy, gx) = gradient(z);
     let k = ppu as f32; // per pixel -> per world unit
-    let (alt, az) = (alt_deg.to_radians(), 315f32.to_radians());
-    let light = [az.sin() * alt.cos(), az.cos() * alt.cos(), alt.sin()]; // (east, north, up)
+    let (alt, az) = (alt_deg.to_radians(), 45f32.to_radians());
+    let light = [az.sin() * alt.cos(), az.cos() * alt.cos(), alt.sin()]; // (+X, +Z, up)
     let v = gx.v.par_iter().zip(&gy.v).map(|(&dx, &dz)| {
         super::throttle::gate();
         let n = [-dx * k, -dz * k, 1.0];
@@ -475,12 +476,15 @@ fn fill_ellipse(img: &mut Rgb, cx: f32, cy: f32, rx: f32, ry: f32, col: [f32; 3]
 }
 
 /// Palms, bushes, tents and fires where the zone's scene places them, on
-/// dry land only. Drawn north first so southern ones overlap them.
+/// dry land only, upright once the viewer turns the map north-up (see
+/// `ink::upright`). Drawn north first -- highest world X -- so southern ones
+/// overlap them.
 fn draw_props(img: &mut Rgb, props: &BTreeMap<String, Vec<(f64, f64)>>, land: &Mask, o: &PaintOptions) {
     let ppu = o.ppu as f32;
     let mut all: Vec<(&str, f64, f64)> = props.iter()
         .flat_map(|(k, v)| v.iter().map(move |&(x, z)| (k.as_str(), x, z))).collect();
-    all.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+    all.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let up = super::ink::upright;
     for (kind, wx, wz) in all {
         let col = ((wx - o.bbox.0) * o.ppu) as f32;
         let row_s = ((wz - o.bbox.2) * o.ppu) as f32; // raster row, south = 0
@@ -492,7 +496,10 @@ fn draw_props(img: &mut Rgb, props: &BTreeMap<String, Vec<(f64, f64)>>, land: &M
             "tree" => {
                 let r = (9.0 + r01 * 4.0) * ppu;
                 if r < 2.5 { blend(img, x as i64, y as i64, rgb(40, 120, 45), 1.0); continue }
-                fill_ellipse(img, x + r * 0.7, y + r * 0.8, r * 0.6, r * 0.35, rgb(60, 40, 15), 0.27);
+                // Shadow down and to the right on screen; turned, its
+                // ellipse swaps axes.
+                let (sx, sy) = up(x, y, r * 0.7, r * 0.8);
+                fill_ellipse(img, sx, sy, r * 0.35, r * 0.6, rgb(60, 40, 15), 0.27);
                 let a0 = r01 * std::f32::consts::TAU;
                 for j in 0..7 {
                     let a = a0 + j as f32 * std::f32::consts::TAU / 7.0;
@@ -508,14 +515,16 @@ fn draw_props(img: &mut Rgb, props: &BTreeMap<String, Vec<(f64, f64)>>, land: &M
             }
             "scrub" => {
                 let r = (3.5 + r01 * 1.5) * ppu;
-                fill_ellipse(img, x + 1.5, y + 1.5, r, r, rgb(60, 40, 15), 0.24);
+                let (sx, sy) = up(x, y, 1.5, 1.5);
+                fill_ellipse(img, sx, sy, r, r, rgb(60, 40, 15), 0.24);
                 fill_ellipse(img, x, y, r, r, rgb(96, 120, 52), 1.0);
             }
             "tent" => {
                 let r = 6.0 * ppu;
-                fill_tri(img, (x - r + 3.0, y + r * 0.6 + 3.0), (x + r + 3.0, y + r * 0.6 + 3.0), (x + 3.0, y - r * 0.8 + 3.0), rgb(50, 30, 10), 0.27);
-                fill_tri(img, (x - r, y + r * 0.6), (x + r, y + r * 0.6), (x, y - r * 0.8), rgb(214, 196, 160), 1.0);
-                fill_tri(img, (x, y - r * 0.8), (x + r, y + r * 0.6), (x, y + r * 0.6), rgb(184, 166, 130), 1.0);
+                let p = |dx: f32, dy: f32| up(x, y, dx, dy);
+                fill_tri(img, p(-r + 3.0, r * 0.6 + 3.0), p(r + 3.0, r * 0.6 + 3.0), p(3.0, -r * 0.8 + 3.0), rgb(50, 30, 10), 0.27);
+                fill_tri(img, p(-r, r * 0.6), p(r, r * 0.6), p(0.0, -r * 0.8), rgb(214, 196, 160), 1.0);
+                fill_tri(img, p(0.0, -r * 0.8), p(r, r * 0.6), p(0.0, r * 0.6), rgb(184, 166, 130), 1.0);
             }
             "fire" => {
                 let r = 1.8 * ppu;

@@ -338,6 +338,10 @@ fn build(
         // Which build produced this map. Lets a later version tell that a
         // container predates a rendering change without re-reading its tiles.
         ("generator".to_string(), env!("CARGO_PKG_VERSION").to_string()),
+        // Symbols and lighting are drawn for north at world +X, which the
+        // viewer puts up while the raster keeps +Z at its top. Maps without
+        // this key have them drawn for +Z, and show sideways; see pyramid.rs.
+        ("north".to_string(), "x".to_string()),
         ("format".to_string(), "webp".to_string()),
         ("tileSize".to_string(), TILE.to_string()),
         ("extent".to_string(), serde_json::to_string(&[bbox.0, bbox.1, bbox.2, bbox.3])?),

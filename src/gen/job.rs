@@ -361,7 +361,8 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<(f32, f32)>,
     /// Map rotation per zone, in degrees clockwise. A zone left north-up has
-    /// no entry.
+    /// no entry. Up to 0.0.6 these were measured from +Z, not from north; see
+    /// `north_is_x`.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub rotations: std::collections::BTreeMap<String, f32>,
     /// Per zone, the floors (numbered from 1, lowest first) NOT to build.
@@ -390,6 +391,10 @@ pub struct Settings {
     /// Share of the CPU map building may use, in percent; see throttle.rs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_cpu: Option<u8>,
+    /// `rotations` are measured from the corrected north (world +X); older
+    /// ones were cleared on upgrade.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub north_is_x: bool,
 }
 
 impl Settings {
@@ -399,10 +404,21 @@ impl Settings {
     }
 
     pub fn load() -> Self {
-        std::fs::read_to_string(settings_path())
+        let mut s: Settings = std::fs::read_to_string(settings_path())
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // Rotations saved before north was corrected were turns away from +Z.
+        // Most are nudges rather than choices, and kept they would leave a
+        // zone west-up for good; every map starts north-up again instead.
+        if !s.north_is_x {
+            s.north_is_x = true;
+            if !s.rotations.is_empty() {
+                s.rotations.clear();
+                s.save();
+            }
+        }
+        s
     }
     pub fn save(&self) {
         let p = settings_path();

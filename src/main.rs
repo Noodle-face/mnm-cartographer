@@ -1502,7 +1502,8 @@ const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
 impl App {
     /// Debug builds only: `MNM_SHOT=out.png` puts the app in the states
     /// listed in `MNM_SHOT_STATE` (comma-separated: help, ring, overlay,
-    /// playing, find=<text>, share, maps), saves a screenshot of its own window and
+    /// playing, find=<text>, share, maps, zone=<name>, painted, zoom=<factor>,
+    /// at=<x>:<z>), saves a screenshot of its own window and
     /// exits. For checking the UI without a person at the screen.
     fn dev_shot(&mut self, ctx: &egui::Context) {
         let Ok(out) = std::env::var("MNM_SHOT") else { return };
@@ -1513,12 +1514,31 @@ impl App {
                     ("help", _) => self.help_open = true,
                     ("share", _) => self.share_open = true,
                     ("maps", _) => { self.maps_open = true; self.refresh_zone_list() }
+                    ("zone", z) => if let Some(i) = self.maps.iter()
+                        .position(|m| m.name.eq_ignore_ascii_case(z)) { self.open_zone(i) },
+                    ("painted", _) => if self.painted.is_some() {
+                        self.show_painted = true;
+                        self.textures.clear();
+                    },
                     ("overlay", _) => self.set_overlay(ctx, true),
                     ("playing", _) => self.set_playing(ctx, true),
                     ("find", q) => self.marker_find = q.to_string(),
                     ("ring", _) => if let Some(p) = self.pyr() {
                         let e = p.extent;
                         self.radial = Some(((e[0] + e[1]) / 2.0, (e[2] + e[3]) / 2.0));
+                    },
+                    _ => {}
+                }
+            }
+        }
+        // After the zone above has opened and fitted, or the fit undoes these.
+        if self.frames == 10 {
+            for st in std::env::var("MNM_SHOT_STATE").unwrap_or_default().split(',') {
+                match st.split_once('=').unwrap_or((st, "")) {
+                    ("zoom", f) => if let Ok(f) = f.parse::<f32>() { self.scale *= f },
+                    ("at", xz) => if let Some((x, z)) = xz.split_once(':')
+                        .and_then(|(x, z)| Some((x.parse().ok()?, z.parse().ok()?))) {
+                        self.pending_center = Some((x, z));
                     },
                     _ => {}
                 }
@@ -1842,6 +1862,27 @@ impl App {
                     }
                 }
             });
+            // Maps from before north was corrected draw their symbols for the
+            // old north, so they lie on their sides now. Say why, and offer
+            // the fix rather than leave it to be found in the Maps panel.
+            let stale = self.maps.iter().filter(|m| !m.upright).count();
+            if stale > 0 && self.gen_job.is_none() && self.pyr().is_some_and(|p| !p.upright) {
+                ui.label(egui::RichText::new(format!(
+                    "North is fixed in this version. {stale} map(s) were built before it, so \
+                     palms and tents on them lie sideways.")).size(10.0)
+                    .color(egui::Color32::from_rgb(0xd0, 0x8a, 0x30)));
+                let found = self.settings.resolve();
+                if ui.add_enabled(found.is_some(), egui::Button::new("Rebuild maps").small())
+                    .on_hover_text("Rebuild every map, at the CPU setting in Maps\u{2026}. \
+                                    Painted maps need Repaint this map as well.")
+                    .clicked()
+                {
+                    if let Some(install) = found {
+                        let out = gen::job::maps_dir();
+                        self.gen_job = Some(gen::job::Job::start(install, out, None, true));
+                    }
+                }
+            }
             // A first run keeps building after its first map appears; say so
             // here, since the panel that showed progress has made way for it.
             if self.gen_job.is_some() && !self.maps_open && !self.maps.is_empty() {

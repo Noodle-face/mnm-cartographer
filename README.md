@@ -131,6 +131,19 @@ bundle's size and timestamp, so it is only re-read when something changed.
 Each zone remembers its own rotation. The compass in the top right turns with
 the map, so north is always readable.
 
+**Where north is.** The game draws no compass, so north here is the one players
+use: the community's [world map of Calafrey and
+Szurr](https://monstersandmemories.miraheze.org/wiki/Zone_Connection_Map), drawn
+north-up. In the game's own coordinates that is +X, with east at -Z. It was
+worked out from the zones themselves: every zone carries backdrop scenery of
+its neighbours, placed in their direction, and only this orientation puts those
+neighbours where the world map has them -- to a median of 12° across 22
+neighbour pairs. Up to 0.0.6 the map put +Z at the top, a quarter-turn out.
+
+Maps built before 0.0.7 still show palms, tents and painted relief drawn for
+the old north, on their sides; the sidebar offers **Rebuild maps**, and a
+painted zone also needs **Repaint this map**.
+
 **Experimental → Paint this map** in the sidebar renders the open zone in a
 full-colour painted style from your game files, in the background, in about
 half a minute. **Show painted style** then switches between it and the inked
@@ -390,7 +403,7 @@ Only useful if you are working on the renderer:
 
 A debug build (`cargo run`) also takes `MNM_SHOT=out.png`: it opens, sets up the
 states listed in `MNM_SHOT_STATE` (comma-separated: `help`, `ring`, `overlay`,
-`playing`, `share`, `maps`, `find=<text>`), saves a screenshot of its own window and
+`playing`, `share`, `maps`, `zone=<name>`, `painted`, `zoom=<factor>`, `at=<x>:<z>`, `find=<text>`), saves a screenshot of its own window and
 exits. For checking the UI without sitting at it.
 
 ## Where maps come from

@@ -1,18 +1,13 @@
 ## What's new
 
-- **Cooler map building** -- building maps now rests the CPU in short, regular
-  pauses by default (**Balanced**). It takes about a fifth longer and keeps
-  the CPU around 10 °C cooler: on a Ryzen 9800X3D a full rebuild peaked at
-  86 °C instead of 95 °C. **CPU while building** in the Maps panel offers Full
-  speed, Balanced and Cool.
-- **Gentler on memory** -- how many zones build at once now follows how much
-  memory is actually free, and a build waits rather than push a PC with the
-  game open into running out.
-- **A heads-up before building** -- the Maps panel and first-run screen now say
-  what a build does to your CPU, and that building while the game is running
-  may cause instability.
-
-You are on 0.0.5 or later, so **Update now** in the banner installs this.
+- **North is where players expect it** -- maps were a quarter-turn out: what
+  the compass called north was west. North now matches the community's world
+  map of Calafrey and Szurr, worked out from where each zone's scenery of its
+  neighbours lies. Every zone opens north-up; any turn you had saved is reset.
+- **Rebuild for upright symbols** -- maps built by earlier versions show palms,
+  tents and campfires on their sides. The sidebar says so and offers
+  **Rebuild maps** (about five minutes). Painted zones also need **Repaint this
+  map**.
 
 ## Install
 
