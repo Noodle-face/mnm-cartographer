@@ -183,6 +183,13 @@ pub fn painted_of(map: &Path) -> Option<Pyramid> {
     p.is_file().then(|| Pyramid::open(&p).ok()).flatten()
 }
 
+/// Its Lamplight version -- coloured by the zone's own lights -- if one has
+/// been made; see gen::light.
+pub fn lamplight_of(map: &Path) -> Option<Pyramid> {
+    let p = crate::gen::tiles::lamplight_path(&painted_path(map));
+    p.is_file().then(|| Pyramid::open(&p).ok()).flatten()
+}
+
 /// Every pyramid under `base`: a flat directory of .mbtiles, or a maps/ subdir.
 pub fn discover(base: &Path) -> Vec<Pyramid> {
     let mut out = Vec::new();

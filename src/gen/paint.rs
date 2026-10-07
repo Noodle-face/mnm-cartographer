@@ -24,6 +24,10 @@ pub struct PaintOptions<'a> {
     /// Per pixel (same layout as the height raster), an index into the
     /// table: what the surface there is made of. None paints it all as sand.
     pub classes: Option<(&'a [u16], &'a [MatClass])>,
+    /// The lowest surface in each pixel, beside `height`'s highest: how far
+    /// a surface stands over the ground it covers. None treats everything as
+    /// ground.
+    pub ground: Option<&'a Grid>,
 }
 
 use super::materials::{self as mc, MatClass};
@@ -162,6 +166,20 @@ fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
 }
 fn scale(a: [f32; 3], k: f32) -> [f32; 3] { [a[0] * k, a[1] * k, a[2] * k] }
+
+/// A material's colour as a sunlit map shows it. A texture's average is a
+/// dull mid-tone -- the game brightens it with light at render time -- so
+/// keep its hue, lift its lightness toward `floor + (1 - floor)` of white,
+/// and give back a little of the saturation the lift washes out. Blue tiles
+/// stay blue and sandstone warm, but plaster reads as plaster, not slate.
+fn sunlit(c: [f32; 3], floor: f32, sat: f32) -> [f32; 3] {
+    let l = (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]).max(1.0);
+    let target = 255.0 * floor + (1.0 - floor) * l;
+    let k = target / l;
+    let lifted = [c[0] * k, c[1] * k, c[2] * k];
+    let out = [0, 1, 2].map(|j| target + (lifted[j] - target) * sat);
+    out.map(|v| v.clamp(0.0, 255.0))
+}
 fn rgb(r: u8, g: u8, b: u8) -> [f32; 3] { [r as f32, g as f32, b as f32] }
 
 // ----------------------------------------------------------------- render
@@ -189,6 +207,11 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
     // ---- what each pixel is made of --------------------------------------
     // Pixels nothing was rasterised at take the class of the nearest that
     // was, as their heights do.
+    let tag_at = |i: usize| -> u16 {
+        let Some((tags, _)) = o.classes else { return u16::MAX };
+        let j = nearest[i];
+        if j == u32::MAX { u16::MAX } else { tags[j as usize] }
+    };
     let class: Vec<u8> = match o.classes {
         None => vec![mc::SAND; n],
         Some((tags, table)) => {
@@ -203,8 +226,7 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
             let (gy, gx) = gradient(&blur(&hf, px(1.2)));
             (0..n).into_par_iter().map(|i| {
                 super::throttle::gate();
-                let j = nearest[i];
-                let t = if j == u32::MAX { u16::MAX } else { tags[j as usize] };
+                let t = tag_at(i);
                 let (x, z) = world_of(i);
                 let slope = gx.v[i].hypot(gy.v[i]) * p;
                 match table.get(t as usize) {
@@ -232,6 +254,77 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
     let water = Mask { w, h, v: (0..n).map(|i| !land.v[i] && !void.v[i]).collect() };
     let beyond = blur(&as_grid(&void), px(4.0).max(1.0));
 
+    // ---- roofs -----------------------------------------------------------
+    // A built surface standing more than a storey over the ground it covers
+    // is the top of a building -- a roof, a dome, a deck -- not a floor. Seen
+    // from above it should read as a building: its own colour, shaded by its
+    // own pitch, outlined, and casting a shadow on the street. Painted as
+    // ground it read as one flat field of paving across a whole city.
+    let elev: Vec<f32> = match o.ground {
+        Some(g) => (0..n).map(|i| {
+            let (t, b) = (height.v[i], g.v[i]);
+            if t.is_finite() && b.is_finite() { t - b } else { 0.0 }
+        }).collect(),
+        None => vec![0.0; n],
+    };
+    // Height alone is not enough: a giant tree, a fallen log or a root
+    // stands as tall as a house. A roof is made of something that says it is
+    // part of a building, or is masonry, metal or cloth; wood and the
+    // unidentified only count where their names say roof.
+    let roof_like = |c: Option<MatClass>, fallback: u8| match c {
+        Some(c) => c.structure || matches!(c.base, mc::STONE | mc::METAL | mc::CLOTH),
+        None => matches!(fallback, mc::STONE | mc::METAL | mc::CLOTH),
+    };
+    let surf_cls = |i: usize| -> Option<MatClass> {
+        let (_, table) = o.classes?;
+        table.get(tag_at(i) as usize).copied()
+    };
+    let roof = Mask { w, h, v: (0..n).map(|i| land.v[i] && elev[i] > 2.2
+        && roof_like(surf_cls(i), class[i])).collect() };
+    let roof = drop_small(&open(&close(&roof, px(0.6).max(1.0)), px(0.5).max(1.0)),
+                          (2.0 * ppu * ppu) as usize + 1);
+    // What colour each roof is: the game's own, where its material says.
+    let roof_cls: Vec<Option<MatClass>> = (0..n).map(|i| if roof.v[i] { surf_cls(i) } else { None }).collect();
+    let roof_rgb: Vec<Option<[f32; 3]>> = roof_cls.iter().map(|c| c.and_then(|c| c.colour())).collect();
+    // The roof's own height, barely smoothed: pitches and ridges must stay.
+    let rh = blur(&hf, px(0.35).max(0.5));
+    let shade_roof = hillshade(&rh, ppu, 42.0);
+    let (rgy, rgx) = gradient(&rh);
+    let rstep = {
+        let k = ((0.9 * ppu).round() as usize).max(3) | 1;
+        let (a, b) = (max_filter(&rh, k), min_filter(&rh, k));
+        Grid { w, h, v: a.v.iter().zip(&b.v).map(|(a, b)| a - b).collect() }
+    };
+    let roof_in = distance_to_background(&roof);
+    // Shadow on the street: each roof shades ground as far from its edge as
+    // it stands tall, the sun at 45 degrees in the north-west. A few fixed
+    // throws, each cast only by roofs at least that high, approximate it --
+    // and only by roof at least a third that wide there: a ruined wall a unit
+    // thick standing eight tall drew an eight-unit streak.
+    let roof_shadow = {
+        let mut g = Grid::new(w, h, 0.0);
+        for d in [1.0f32, 2.5, 4.5, 7.0, 10.0] {
+            let k = px(d as f64).round() as isize;
+            if k < 1 { continue }
+            for y in 0..h as isize {
+                for x in 0..w as isize {
+                    // North-west of a pixel is up both raster axes: +X, +Z.
+                    let (sx, sy) = (x + k, y + k);
+                    if sx >= w as isize || sy >= h as isize { continue }
+                    let s = sy as usize * w + sx as usize;
+                    if roof.v[s] && elev[s] >= d && roof_in.v[s] * 3.0 >= px(d as f64) {
+                        g.v[y as usize * w + x as usize] = 1.0;
+                    }
+                }
+            }
+        }
+        blur(&g, px(0.7).max(0.6))
+    };
+    let near_roof = grow(&roof, px(1.0).max(1.0));
+    // How broad the roof is around a pixel: a wall top or a pillar is all
+    // edge, and drawing all of it as eaves left dark specks over ruins.
+    let roof_broad = max_filter(&roof_in, ((3.0 * ppu).round() as usize).max(3) | 1);
+
     // ---- slope, rock, walls ---------------------------------------------
     let (gy, gx) = gradient(&blur(&hf, px(1.2)));
     let slope: Vec<f32> = gx.v.iter().zip(&gy.v).map(|(a, b)| a.hypot(*b) * p).collect();
@@ -251,7 +344,7 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
     // With classes known, steepness has already decided rock per surface;
     // without, fall back to judging by the terrain alone.
     let known = o.classes.is_some();
-    let rock = Mask { w, h, v: (0..n).map(|i| land.v[i] && !built(class[i])
+    let rock = Mask { w, h, v: (0..n).map(|i| land.v[i] && !built(class[i]) && !near_roof.v[i]
         && (class[i] == mc::ROCK
             || (!known && (steep.v[i] || (rel[i] > 0.55 && near_steep.v[i]))))).collect() };
     let rock = drop_small(&open(&rock, 1.5), (120.0 * ppu * ppu) as usize + 1);
@@ -267,7 +360,7 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
     let walls = Mask { w, h, v: (0..n).map(|i| {
         let step = mx.v[i] - mn.v[i];
         let broad = bgx.v[i].hypot(bgy.v[i]) * p;
-        land.v[i] && !rock.v[i] && step > min_step && step < 14.0 && broad < 0.25
+        land.v[i] && !rock.v[i] && !near_roof.v[i] && step > min_step && step < 14.0 && broad < 0.25
     }).collect() };
     let thin = distance_to_background(&walls);
     let walls = Mask { w, h, v: (0..n).map(|i| walls.v[i] && thin.v[i] <= p.max(1.5)).collect() };
@@ -283,13 +376,14 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
     let rsoft = blur(&as_grid(&rock), 0.8);
     let wallsoft = blur(&as_grid(&walls), 0.6);
 
-    // Cast shadows to the south-east (raster: +x, -row).
+    // Cast shadows to the south-east: the caster lies north-west, which is
+    // up both raster axes (+X is north, +Z west).
     let shift = |m: &Mask, d: f32| -> Grid {
         let k = d.round() as isize;
         let mut g = Grid::new(w, h, 0.0);
         for y in 0..h as isize {
             for x in 0..w as isize {
-                let (sx, sy) = (x - k, y + k);
+                let (sx, sy) = (x + k, y + k);
                 if sx >= 0 && sy >= 0 && (sx as usize) < w && (sy as usize) < h && m.v[sy as usize * w + sx as usize] {
                     g.v[y as usize * w + x as usize] = 1.0;
                 }
@@ -342,6 +436,13 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
         let tone = fbm(x, z, 300.0, 5);
         let grain = (rand01((x * 4.0) as i64, (z * 4.0) as i64, 9) - 0.5) * 9.0;
         let lit = 0.72 + 0.42 * shade_t.v[i];
+        // The game's own colour for a built surface, where its material
+        // gives one: pale limestone paving should not come out a grey grid.
+        let real = o.classes.and_then(|(_, t)| t.get(tag_at(i) as usize)).and_then(|c| c.colour())
+            // Paving is ground: quieter than the buildings on it, barely
+            // lifted -- pale grey dungeon stone lifted like a roof glared
+            // white across whole crypts.
+            .map(|c| sunlit(c, 0.12, 0.85));
         let mut c = match class[i] {
             mc::GRASS => {
                 let b = fbm(x, z, 18.0, 41) * 0.5 + 0.5;
@@ -374,20 +475,31 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
                 let seam = (z / 1.3).rem_euclid(1.0) < 0.08;
                 let v = rand01(row, 0, 67) * 0.3;
                 let grain2 = fbm(x * 0.3, z * 4.0, 2.0, 69) * 0.08;
-                let p = scale(mix(rgb(108, 76, 46), rgb(158, 116, 72), v + 0.35 + grain2), lit);
-                if seam { scale(p, 0.6) } else { p }
+                let base = match real {
+                    Some(r) => scale(r, 0.82 + v + grain2),
+                    None => mix(rgb(108, 76, 46), rgb(158, 116, 72), v + 0.35 + grain2),
+                };
+                let p = scale(base, lit);
+                if seam { scale(p, 0.68) } else { p }
             }
             mc::STONE => {
-                // Flagstones about two and a half units across.
+                // Flagstones about two and a half units across, their joints
+                // a shade darker -- a pattern in the paving, not a grid on it.
                 let (gx, gz) = ((x / 2.6).floor() as i64, (z / 2.6).floor() as i64);
                 let (fx, fz) = ((x / 2.6).rem_euclid(1.0), (z / 2.6).rem_euclid(1.0));
-                let mortar = fx < 0.06 || fz < 0.06;
-                let v = rand01(gx, gz, 71) * 0.35;
-                let p = scale(mix(rgb(124, 118, 110), rgb(176, 170, 158), v + 0.3 + tone * 0.1), lit);
-                if mortar { scale(p, 0.62) } else { p }
+                let mortar = fx < 0.05 || fz < 0.05;
+                let v = rand01(gx, gz, 71) * 0.18;
+                // Our warm stone, leaning toward the game's own colour for it.
+                let ours = mix(rgb(176, 160, 136), rgb(214, 198, 170), v * 2.0 + 0.2 + tone * 0.1);
+                let base = match real {
+                    Some(r) => mix(ours, scale(r, 0.9 + v + tone * 0.06), 0.4),
+                    None => ours,
+                };
+                let p = scale(base, lit);
+                if mortar { scale(p, 0.9) } else { p }
             }
-            mc::METAL => scale(rgb(138, 138, 142), lit * (0.92 + 0.08 * fbm(x * 0.2, z * 3.0, 3.0, 73))),
-            mc::CLOTH => scale(rgb(142, 62, 56), lit),
+            mc::METAL => scale(real.unwrap_or(rgb(138, 138, 142)), lit * (0.92 + 0.08 * fbm(x * 0.2, z * 3.0, 3.0, 73))),
+            mc::CLOTH => scale(real.unwrap_or(rgb(142, 62, 56)), lit),
             _ => {
                 let t = (0.25 + 0.75 * (shade_d.v[i] * 0.7 + shade_t.v[i] * 0.45) - 0.18 + tone * 0.08).clamp(0.0, 1.0);
                 mix(sand_d, sand_l, t)
@@ -407,6 +519,32 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
         // walls
         c = scale(c, 1.0 - 0.35 * (wshadow.v[i] - wallsoft.v[i]).clamp(0.0, 1.0));
         c = mix(c, scale(wall_c, 0.85 + 0.3 * shade_t.v[i]), wallsoft.v[i]);
+        // roofs, and the shade they throw on the ground around them
+        if roof.v[i] {
+            let base = roof_rgb[i].map(|c| sunlit(c, 0.4, 1.2)).unwrap_or(match roof_cls[i].map_or(class[i], |c| c.base) {
+                mc::WOOD => rgb(146, 104, 66),
+                mc::METAL => rgb(128, 136, 146),
+                mc::CLOTH => rgb(168, 72, 60),
+                // Stone and the unidentified: lime-washed plaster.
+                _ => rgb(222, 210, 186),
+            });
+            let pitch = rgx.v[i].hypot(rgy.v[i]) * p;
+            // Neighbouring buildings differ a little in tone, as limewash and
+            // weather leave them; keyed to the world, so every zoom agrees.
+            let tone_r = 1.0 + 0.07 * fbm(x, z, 22.0, 83);
+            let mut r = scale(base, (0.62 + 0.55 * shade_roof.v[i] + 0.04 * fbm(x, z, 6.0, 81)) * tone_r);
+            // Courses of tiles across a pitched roof: lines of equal height.
+            if pitch > 0.3 && pitch < 3.0 && (rh.v[i] / 0.55).rem_euclid(1.0) < 0.13 {
+                r = scale(r, 0.86);
+            }
+            // Eaves and ridges: the roof's edge, and steps within it.
+            if roof_in.v[i] <= p.mul_add(0.16, 0.0).max(1.0) || rstep.v[i] > 1.4 {
+                r = scale(r, if roof_broad.v[i] > p { 0.52 } else { 0.78 });
+            }
+            c = r;
+        } else {
+            c = scale(c, 1.0 - 0.4 * roof_shadow.v[i]);
+        }
         // wet sand at the shore
         if land.v[i] && dist_l.v[i] < px(4.0) { c = scale(c, 0.86) }
         // water
@@ -512,6 +650,43 @@ fn draw_props(img: &mut Rgb, props: &BTreeMap<String, Vec<(f64, f64)>>, land: &M
                     fill_tri(img, (x, y), tip, s2, scale(leaf, 0.8), 1.0);
                 }
                 fill_ellipse(img, x, y, 1.2 * ppu, 1.2 * ppu, rgb(110, 80, 40), 1.0);
+            }
+            "conifer" | "broadleaf" => {
+                // A crown seen from above: a ring of lobes round a darker
+                // heart, lit from the north-west, shadow to the south-east.
+                let conifer = kind == "conifer";
+                // Crowns of real size: these are big trees, and at their
+                // own size a forest reads as a forest at every zoom.
+                let r = (if conifer { 5.5 } else { 6.5 } + r01 * 3.0) * ppu;
+                if r < 1.6 { blend(img, x as i64, y as i64, if conifer { rgb(34, 82, 52) } else { rgb(70, 120, 50) }, 1.0); continue }
+                let (sx, sy) = up(x, y, r * 0.55, r * 0.6);
+                fill_ellipse(img, sx, sy, r * 0.95, r * 0.95, rgb(40, 34, 20), 0.28);
+                let (dark, mid, light) = if conifer {
+                    (rgb(26, 64, 42), rgb(40, 96, 60), rgb(76, 136, 84))
+                } else {
+                    (rgb(52, 92, 38), rgb(80, 132, 54), rgb(128, 170, 82))
+                };
+                let lobes = if conifer { 9 } else { 6 };
+                let a0 = r01 * std::f32::consts::TAU;
+                for j in 0..lobes {
+                    let a = a0 + j as f32 * std::f32::consts::TAU / lobes as f32;
+                    let (lx, ly) = (x + r * 0.55 * a.cos(), y + r * 0.55 * a.sin());
+                    let lr = r * if conifer { 0.42 } else { 0.55 };
+                    fill_ellipse(img, lx, ly, lr, lr, mid, 1.0);
+                }
+                fill_ellipse(img, x, y, r * 0.55, r * 0.55, dark, 0.4);
+                // The lit side: north-west on screen.
+                let (hx, hy) = up(x, y, -r * 0.3, -r * 0.3);
+                fill_ellipse(img, hx, hy, r * 0.38, r * 0.38, light, 0.7);
+            }
+            "deadtree" => {
+                let r = (3.0 + r01) * ppu;
+                if r < 1.6 { continue }
+                for j in 0..5 {
+                    let a = r01 * 6.0 + j as f32 * 1.26;
+                    let (ex, ey) = (x + r * a.cos(), y + r * a.sin());
+                    fill_tri(img, (x - 0.6, y), (x + 0.6, y), (ex, ey), rgb(92, 72, 52), 0.9);
+                }
             }
             "scrub" => {
                 let r = (3.5 + r01 * 1.5) * ppu;

@@ -114,6 +114,7 @@ pub fn decode(text: &str) -> Result<Decoded> {
             reqs: Reqs { other, ..Default::default() },
             src: String::new(),
             added: String::new(),
+            floor: None,
         },
     })
 }

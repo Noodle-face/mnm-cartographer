@@ -60,6 +60,7 @@ fn cab_of(path: &str) -> &str {
 
 impl Env {
     pub fn open(path: &Path) -> Result<Self> {
+        let _t = super::Timer::start("open bundle");
         let len = std::fs::metadata(path)
             .with_context(|| format!("stat {}", path.display()))?
             .len();
@@ -288,6 +289,7 @@ impl Shared {
     /// Open every asset (non-scene) bundle in `dir`. Ones that fail to open
     /// are skipped: a missing mesh is a gap in a map, not a failed build.
     pub fn open(dir: &Path) -> Shared {
+        let _t = super::Timer::start("open shared bundles");
         let mut sh = Shared::default();
         let Ok(rd) = std::fs::read_dir(dir) else { return sh };
         let mut paths: Vec<_> = rd.flatten().map(|e| e.path())
@@ -297,8 +299,14 @@ impl Shared {
             })
             .collect();
         paths.sort();
-        for p in paths {
-            let Ok(env) = Env::open(&p) else { continue };
+        // Each on its own thread: one after another they took 7 seconds, at
+        // once about as long as the largest. Collected in the sorted order,
+        // so which bundle a shared name resolves to does not change.
+        let opened: Vec<Option<Env>> = std::thread::scope(|s| {
+            let hs: Vec<_> = paths.iter().map(|p| s.spawn(move || Env::open(p).ok())).collect();
+            hs.into_iter().map(|h| h.join().ok().flatten()).collect()
+        });
+        for env in opened.into_iter().flatten() {
             let ei = sh.envs.len();
             for (cab, &fi) in &env.by_cab {
                 sh.by_cab.insert(cab.clone(), (ei, fi));

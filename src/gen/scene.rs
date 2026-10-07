@@ -17,9 +17,30 @@ fn is_sea_object(name: &str) -> bool {
     rest == "_ocean" || rest == "_shoreline"
 }
 
-/// Sum a transform chain's local positions. The Python did the same: a plain
-/// sum rather than a full matrix, which is exact for the unrotated, unscaled
-/// parents these objects actually have.
+/// Split a name into lowercase words at punctuation and case changes:
+/// "EvershadePine (3)" is evershade, pine, 3.
+fn words(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut prev_lower = false;
+    for ch in s.chars() {
+        if !ch.is_alphanumeric() {
+            if !cur.is_empty() { out.push(std::mem::take(&mut cur)) }
+            prev_lower = false;
+            continue;
+        }
+        if ch.is_uppercase() && prev_lower && !cur.is_empty() { out.push(std::mem::take(&mut cur)) }
+        prev_lower = ch.is_lowercase() || ch.is_ascii_digit();
+        cur.extend(ch.to_lowercase());
+    }
+    if !cur.is_empty() { out.push(cur) }
+    out
+}
+
+/// Sum a transform chain's local positions: exact only where no parent is
+/// rotated or scaled. Fallen Watch keeps its props under a rotated
+/// "ZoneRootRotation", so props use the full transform instead; only the sea
+/// level, a height, still uses this.
 fn chain_sum(env: &Env, start: (usize, usize)) -> [f64; 3] {
     let mut acc = [0.0; 3];
     let mut seen = HashSet::new();
@@ -91,8 +112,26 @@ fn prop_kind(name: &str) -> Option<&'static str> {
         _ => n,
     };
     let n = n.trim().to_lowercase();
+    let n = n.trim_end_matches(" variant").trim_end_matches("_variant");
+    // Whole words, not substrings: "Spine" -- a skeleton's, or the bone of a
+    // character rig -- is not a pine, and drew conifers across crypt floors.
+    let w = words(name);
+    let word = |keys: &[&str]| w.iter().any(|x| keys.contains(&x.as_str()));
+    // Pieces of one tree -- its faces, leaves, stump -- are not more trees,
+    // and a rig's bones or a skeleton are not trees at all.
+    let part = word(&["side", "front", "back", "top", "bottom", "leaves", "stump", "log", "logs",
+                      "branch", "branches", "root", "roots", "trunk", "connector", "bracing", "prop",
+                      "hut", "window", "fence", "def", "skel", "skeleton", "spine", "bone", "bones"]);
     if n.starts_with("palmtree") || n.starts_with("yuccabush") {
         Some("tree")
+    } else if part {
+        None
+    } else if n.starts_with("treedead") || n.starts_with("deadtree") {
+        Some("deadtree")
+    } else if n.starts_with("kb_tree") || word(&["pine", "conifer", "connifer", "spruce", "fir"]) {
+        Some("conifer")
+    } else if word(&["oak", "birch", "willow", "maple"]) || n.contains("foresttree") || n.contains("forest_tree") {
+        Some("broadleaf")
     } else if n.starts_with("barrelcactus") {
         Some("scrub")
     } else if n == "ashiratent" {
@@ -106,7 +145,16 @@ fn prop_kind(name: &str) -> Option<&'static str> {
 
 /// World XZ of props worth drawing, by kind.
 pub fn scene_props(env: &Env, files: &[usize]) -> std::collections::BTreeMap<String, Vec<(f64, f64)>> {
-    let mut out: std::collections::BTreeMap<String, Vec<(f64, f64)>> = Default::default();
+    scene_props_3d(env, files).into_iter()
+        .map(|(k, v)| (k, v.into_iter().map(|p| (p[0], p[2])).collect()))
+        .collect()
+}
+
+/// As [`scene_props`], keeping each prop's height: a floor of a zone built on
+/// top of itself draws only the props standing on it.
+pub fn scene_props_3d(env: &Env, files: &[usize]) -> std::collections::BTreeMap<String, Vec<[f64; 3]>> {
+    let mut out: std::collections::BTreeMap<String, Vec<[f64; 3]>> = Default::default();
+    let mut hier = super::extract::Hierarchy::default();
     for &fi in files {
         let n = env.col.serialized_files()[fi].file.objects.len();
         for oi in 0..n {
@@ -117,8 +165,8 @@ pub fn scene_props(env: &Env, files: &[usize]) -> std::collections::BTreeMap<Str
             let Some(name) = as_str(field(&go, "m_Name")) else { continue };
             let Some(kind) = prop_kind(name) else { continue };
             let Some(tr) = transform_of(env, fi, &go) else { continue };
-            let p = chain_sum(env, tr);
-            out.entry(kind.to_string()).or_default().push((p[0], p[2]));
+            let p = hier.world(env, tr).t;
+            out.entry(kind.to_string()).or_default().push(p);
         }
     }
     out
@@ -138,4 +186,29 @@ pub fn thin(points: &[(f64, f64)], spacing: f64) -> Vec<(f64, f64)> {
         }
     }
     keep
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trees_by_whole_word() {
+        assert_eq!(prop_kind("EvershadePine (92)"), Some("conifer"));
+        assert_eq!(prop_kind("KB_Tree_4b Variant"), Some("conifer"));
+        assert_eq!(prop_kind("KB_Thicket_Conifer"), Some("conifer"));
+        assert_eq!(prop_kind("Oak_English_Hero_Field"), Some("broadleaf"));
+        assert_eq!(prop_kind("TreeDead (4)"), Some("deadtree"));
+        assert_eq!(prop_kind("PalmTreePrefab_07"), Some("tree"));
+        // A spine is a bone, not a pine.
+        assert_eq!(prop_kind("Spine"), None);
+        assert_eq!(prop_kind("DEF_spine.002"), None);
+        assert_eq!(prop_kind("SkeletonSpine.001"), None);
+        assert_eq!(prop_kind("DwarfM_Spine"), None);
+        // Pieces of a tree are not more trees.
+        assert_eq!(prop_kind("EvershadePineLeaves"), None);
+        assert_eq!(prop_kind("Oak_English_Hero_Field_Side"), None);
+        assert_eq!(prop_kind("PineLogs"), None);
+        assert_eq!(prop_kind("KB_Tree_Stump"), None);
+    }
 }

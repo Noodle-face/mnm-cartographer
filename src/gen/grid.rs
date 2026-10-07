@@ -88,6 +88,37 @@ pub fn quantile(sorted: &[f32], q: f64) -> f32 {
     sorted[lo] * (1.0 - f) + sorted[hi] * f
 }
 
+/// [`quantile`] of the finite values in `v` at each of `qs`, without sorting
+/// them all: the ranks quantile reads are picked out directly, so the values
+/// are exactly the same. Sorting every land height of a map to read two
+/// quartiles was one of the slower steps of drawing it.
+pub fn quantiles(v: &[f32], qs: &[f64]) -> Vec<f32> {
+    let mut s: Vec<f32> = v.iter().copied().filter(|t| t.is_finite()).collect();
+    if s.is_empty() { return vec![f32::NAN; qs.len()] }
+    let n = s.len();
+    let mut ranks: Vec<usize> = qs.iter().flat_map(|q| {
+        let pos = q.clamp(0.0, 1.0) * (n - 1) as f64;
+        [pos.floor() as usize, pos.ceil() as usize]
+    }).collect();
+    ranks.sort_unstable();
+    ranks.dedup();
+    // Each pick partitions what is left above the previous one.
+    let mut at: std::collections::HashMap<usize, f32> = Default::default();
+    let mut lo = 0;
+    for &r in &ranks {
+        let (_, v, _) = s[lo..].select_nth_unstable_by(r - lo, |a, b| a.partial_cmp(b).unwrap());
+        at.insert(r, *v);
+        lo = r;
+    }
+    qs.iter().map(|q| {
+        let pos = q.clamp(0.0, 1.0) * (n - 1) as f64;
+        let (l, h) = (pos.floor() as usize, pos.ceil() as usize);
+        if l == h { return at[&l] }
+        let f = (pos - l as f64) as f32;
+        at[&l] * (1.0 - f) + at[&h] * f
+    }).collect()
+}
+
 pub fn sorted_copy(v: &[f32]) -> Vec<f32> {
     let mut s: Vec<f32> = v.iter().copied().filter(|t| t.is_finite()).collect();
     s.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -380,38 +411,47 @@ pub fn disk(r: usize) -> Vec<(isize, isize)> {
 
 pub fn dilate(m: &Mask, se: &[(isize, isize)]) -> Mask {
     // Gathered rather than scattered, so rows can be filled independently:
-    // a pixel is set if any pixel of the reflected element is.
+    // a pixel is set if any pixel of the reflected element is. Whole rows at
+    // a time, one shifted row per offset, rather than an offset at a time per
+    // pixel: the same result, in a form the compiler can vectorise.
     let mut out = Mask::new(m.w, m.h, false);
     let (w, h) = (m.w as isize, m.h as isize);
-    out.v.par_chunks_mut(m.w).enumerate().for_each(|(y, row)| {
+    out.v.par_chunks_mut(m.w.max(1)).enumerate().for_each(|(y, row)| {
         super::throttle::gate();
-        for x in 0..m.w {
-            row[x] = se.iter().any(|(dx, dy)| {
-                let (nx, ny) = (x as isize - dx, y as isize - dy);
-                nx >= 0 && ny >= 0 && nx < w && ny < h && m.v[ny as usize * m.w + nx as usize]
-            });
+        for &(dx, dy) in se {
+            let sy = y as isize - dy;
+            if sy < 0 || sy >= h { continue }
+            let src = &m.v[sy as usize * m.w..(sy as usize + 1) * m.w];
+            // out[x] |= src[x - dx] wherever x - dx is on the row.
+            let (a, b) = (dx.max(0), (w + dx).min(w));
+            if a >= b { continue }
+            let (a, b) = (a as usize, b as usize);
+            let s0 = (a as isize - dx) as usize;
+            for (o, s) in row[a..b].iter_mut().zip(&src[s0..s0 + (b - a)]) { *o |= *s }
         }
     });
     out
 }
 
 pub fn erode(m: &Mask, se: &[(isize, isize)]) -> Mask {
-    let mut out = Mask::new(m.w, m.h, false);
+    let mut out = Mask::new(m.w, m.h, true);
     let (w, h) = (m.w as isize, m.h as isize);
-    out.v.par_chunks_mut(m.w).enumerate().for_each(|(y, row)| {
+    out.v.par_chunks_mut(m.w.max(1)).enumerate().for_each(|(y, row)| {
         super::throttle::gate();
-        for x in 0..m.w {
-            let mut all = true;
-            for (dx, dy) in se {
-                let (nx, ny) = (x as isize + dx, y as isize + dy);
-                // scipy's binary_erosion pads with border_value = 0, so a pixel
-                // whose structuring element hangs off the frame is eroded.
-                if nx < 0 || ny < 0 || nx >= w || ny >= h || !m.at(nx as usize, ny as usize) {
-                    all = false;
-                    break;
-                }
-            }
-            row[x] = all;
+        for &(dx, dy) in se {
+            let sy = y as isize + dy;
+            // scipy's binary_erosion pads with border_value = 0, so a pixel
+            // whose structuring element hangs off the frame is eroded.
+            if sy < 0 || sy >= h { row.fill(false); break }
+            let src = &m.v[sy as usize * m.w..(sy as usize + 1) * m.w];
+            // out[x] &= src[x + dx] wherever x + dx is on the row; elsewhere false.
+            let (a, b) = ((-dx).max(0), (w - dx).min(w));
+            if a >= b { row.fill(false); break }
+            let (a, b) = (a as usize, b as usize);
+            row[..a].fill(false);
+            row[b..].fill(false);
+            let s0 = (a as isize + dx) as usize;
+            for (o, s) in row[a..b].iter_mut().zip(&src[s0..s0 + (b - a)]) { *o &= *s }
         }
     });
     out
@@ -432,33 +472,69 @@ pub fn outline(m: &Mask, w: usize) -> Mask {
 // --------------------------------------------------- connected components
 
 /// 4-connected labelling, matching `scipy.ndimage.label`'s default structure.
-/// Returns (labels, count); label 0 is background.
+/// Returns (labels, count); label 0 is background. Components are numbered in
+/// the raster order of their first pixel, as scipy numbers them.
+///
+/// Works on runs: each row's runs of set pixels, joined to the runs they
+/// touch in the row above, then numbered in raster order. A pixel-by-pixel
+/// flood fill did the same thing one pixel at a time, on one core, and tidying
+/// a zone's land and elevation bands spent more time in it than anywhere else.
 pub fn label(m: &Mask) -> (Vec<u32>, usize) {
     let (w, h) = (m.w, m.h);
-    let mut lab = vec![0u32; w * h];
-    let mut n = 0u32;
-    let mut stack: Vec<usize> = Vec::new();
-    for start in 0..w * h {
-        if !m.v[start] || lab[start] != 0 {
-            continue;
+    let rows: Vec<Vec<(u32, u32)>> = (0..h).into_par_iter().map(|y| {
+        let row = &m.v[y * w..(y + 1) * w];
+        let mut runs = Vec::new();
+        let mut x = 0;
+        while x < w {
+            if row[x] {
+                let x0 = x;
+                while x < w && row[x] { x += 1 }
+                runs.push((x0 as u32, x as u32));
+            } else {
+                x += 1;
+            }
         }
-        n += 1;
-        lab[start] = n;
-        stack.push(start);
-        while let Some(p) = stack.pop() {
-            let (x, y) = (p % w, p / w);
-            let push = |q: usize, stack: &mut Vec<usize>, lab: &mut Vec<u32>| {
-                if m.v[q] && lab[q] == 0 {
-                    lab[q] = n;
-                    stack.push(q);
-                }
-            };
-            if x > 0 { push(p - 1, &mut stack, &mut lab) }
-            if x + 1 < w { push(p + 1, &mut stack, &mut lab) }
-            if y > 0 { push(p - w, &mut stack, &mut lab) }
-            if y + 1 < h { push(p + w, &mut stack, &mut lab) }
+        runs
+    }).collect();
+    let mut first = vec![0usize; h + 1];
+    for y in 0..h { first[y + 1] = first[y] + rows[y].len() }
+    let total = first[h];
+    let mut parent: Vec<u32> = (0..total as u32).collect();
+    fn find(parent: &mut [u32], mut i: u32) -> u32 {
+        while parent[i as usize] != i {
+            parent[i as usize] = parent[parent[i as usize] as usize];
+            i = parent[i as usize];
+        }
+        i
+    }
+    for y in 1..h {
+        let (above, here) = (&rows[y - 1], &rows[y]);
+        let (mut i, mut j) = (0, 0);
+        // Two runs touch, 4-connected, when they share a column.
+        while i < above.len() && j < here.len() {
+            let (a, b) = (above[i], here[j]);
+            if a.0 < b.1 && b.0 < a.1 {
+                let (ra, rb) = (find(&mut parent, (first[y - 1] + i) as u32),
+                                find(&mut parent, (first[y] + j) as u32));
+                if ra != rb { parent[ra.max(rb) as usize] = ra.min(rb) }
+            }
+            if a.1 <= b.1 { i += 1 } else { j += 1 }
         }
     }
+    let mut label_of = vec![0u32; total];
+    let mut run_label = vec![0u32; total];
+    let mut n = 0u32;
+    for r in 0..total {
+        let root = find(&mut parent, r as u32) as usize;
+        if label_of[root] == 0 { n += 1; label_of[root] = n }
+        run_label[r] = label_of[root];
+    }
+    let mut lab = vec![0u32; w * h];
+    lab.par_chunks_mut(w.max(1)).enumerate().for_each(|(y, row)| {
+        for (j, &(x0, x1)) in rows[y].iter().enumerate() {
+            row[x0 as usize..x1 as usize].fill(run_label[first[y] + j]);
+        }
+    });
     (lab, n as usize)
 }
 
@@ -617,53 +693,33 @@ pub fn gradient(g: &Grid) -> (Grid, Grid) {
 /// The wall detector flags a band as wide as its window, so the raw mask is a
 /// slab tens of pixels across. Reducing it to a centreline is what lets a wall
 /// be drawn at a fixed weight regardless of zoom.
+///
+/// Each sub-step decides every removal from the image as it stood when the
+/// sub-step began, so the order pixels are looked at in does not matter: only
+/// the pixels still set are visited, in parallel, and the result is the same
+/// as scanning the whole image one pixel at a time. That scan took dozens of
+/// passes over every pixel to thin a thick band, on one core -- the slowest
+/// single step of a build.
 pub fn skeletonize(m: &Mask) -> Mask {
     let (w, h) = (m.w, m.h);
     let mut img = m.clone();
+    if w < 3 || h < 3 { return img }
+    let mut on: Vec<u32> = (0..w * h)
+        .filter(|&i| img.v[i] && (1..w - 1).contains(&(i % w)) && (1..h - 1).contains(&(i / w)))
+        .map(|i| i as u32)
+        .collect();
     loop {
         let mut changed = false;
         for step in 0..2 {
-            let mut remove = Vec::new();
-            for y in 1..h.saturating_sub(1) {
-                for x in 1..w.saturating_sub(1) {
-                    if !img.at(x, y) {
-                        continue;
-                    }
-                    // P2..P9 clockwise from north.
-                    let p = [
-                        img.at(x, y - 1),
-                        img.at(x + 1, y - 1),
-                        img.at(x + 1, y),
-                        img.at(x + 1, y + 1),
-                        img.at(x, y + 1),
-                        img.at(x - 1, y + 1),
-                        img.at(x - 1, y),
-                        img.at(x - 1, y - 1),
-                    ];
-                    let b = p.iter().filter(|t| **t).count();
-                    if !(2..=6).contains(&b) {
-                        continue;
-                    }
-                    let a = (0..8).filter(|&i| !p[i] && p[(i + 1) % 8]).count();
-                    if a != 1 {
-                        continue;
-                    }
-                    let (c1, c2) = if step == 0 {
-                        (p[0] && p[2] && p[4], p[2] && p[4] && p[6])
-                    } else {
-                        (p[0] && p[2] && p[6], p[0] && p[4] && p[6])
-                    };
-                    if c1 || c2 {
-                        continue;
-                    }
-                    remove.push(y * w + x);
-                }
-            }
+            let img_ref = &img;
+            let remove: Vec<u32> = on.par_chunks(4096).flat_map_iter(|chunk| {
+                super::throttle::gate();
+                chunk.iter().copied().filter(move |&i| thins(img_ref, i as usize, step))
+            }).collect();
             if !remove.is_empty() {
                 changed = true;
-                for i in remove {
-                    img.v[i] = false;
-                }
+                for &i in &remove { img.v[i as usize] = false }
+                on.retain(|&i| img.v[i as usize]);
             }
         }
         if !changed {
@@ -673,15 +729,47 @@ pub fn skeletonize(m: &Mask) -> Mask {
     img
 }
 
+/// Whether Zhang-Suen sub-step `step` removes the set pixel at `i`, which is
+/// not on the image's edge.
+fn thins(img: &Mask, i: usize, step: usize) -> bool {
+    let w = img.w;
+    let (x, y) = (i % w, i / w);
+    // P2..P9 clockwise from north.
+    let p = [
+        img.at(x, y - 1),
+        img.at(x + 1, y - 1),
+        img.at(x + 1, y),
+        img.at(x + 1, y + 1),
+        img.at(x, y + 1),
+        img.at(x - 1, y + 1),
+        img.at(x - 1, y),
+        img.at(x - 1, y - 1),
+    ];
+    let b = p.iter().filter(|t| **t).count();
+    if !(2..=6).contains(&b) {
+        return false;
+    }
+    let a = (0..8).filter(|&i| !p[i] && p[(i + 1) % 8]).count();
+    if a != 1 {
+        return false;
+    }
+    let (c1, c2) = if step == 0 {
+        (p[0] && p[2] && p[4], p[2] && p[4] && p[6])
+    } else {
+        (p[0] && p[2] && p[6], p[0] && p[4] && p[6])
+    };
+    !(c1 || c2)
+}
+
 // --------------------------------------------------------------- warping
 
 /// Bilinear resample at arbitrary coordinates, clamped at the edges --
 /// `map_coordinates(order=1, mode="nearest")`.
 pub fn warp(g: &Grid, dx: &Grid, dy: &Grid) -> Grid {
     let mut out = Grid::new(g.w, g.h, 0.0);
-    for y in 0..g.h {
-        // Serial, but run once per plane in parallel; a whole plane is too
-        // long a step to leave ungated.
+    // Rows in parallel: run once per colour plane, three planes side by
+    // side used three cores and left the rest idle.
+    out.v.par_chunks_mut(g.w.max(1)).enumerate().for_each(|(y, row)| {
         super::throttle::gate();
         for x in 0..g.w {
             let sx = (x as f32 + dx.at(x, y)).clamp(0.0, g.w as f32 - 1.0);
@@ -693,9 +781,9 @@ pub fn warp(g: &Grid, dx: &Grid, dy: &Grid) -> Grid {
                 + g.at(x1, y0) * fx * (1.0 - fy)
                 + g.at(x0, y1) * (1.0 - fx) * fy
                 + g.at(x1, y1) * fx * fy;
-            out.set(x, y, v);
+            row[x] = v;
         }
-    }
+    });
     out
 }
 
@@ -728,4 +816,234 @@ pub fn normalize(g: &Grid) -> Grid {
     let var = g.v.iter().map(|t| (t - mean).powi(2)).sum::<f32>() / n;
     let sd = var.sqrt() + 1e-6;
     Grid { w: g.w, h: g.h, v: g.v.iter().map(|t| (t - mean) / sd).collect() }
+}
+
+#[cfg(test)]
+mod skeleton_tests {
+    use super::*;
+
+    /// The whole-image scan the parallel version replaced, kept to check it.
+    /// Zhang-Suen thinning -- skimage's default 2-D skeletonize.
+    ///
+    /// The wall detector flags a band as wide as its window, so the raw mask is a
+    /// slab tens of pixels across. Reducing it to a centreline is what lets a wall
+    /// be drawn at a fixed weight regardless of zoom.
+    fn skeletonize_reference(m: &Mask) -> Mask {
+        let (w, h) = (m.w, m.h);
+        let mut img = m.clone();
+        loop {
+            let mut changed = false;
+            for step in 0..2 {
+                let mut remove = Vec::new();
+                for y in 1..h.saturating_sub(1) {
+                    for x in 1..w.saturating_sub(1) {
+                        if !img.at(x, y) {
+                            continue;
+                        }
+                        // P2..P9 clockwise from north.
+                        let p = [
+                            img.at(x, y - 1),
+                            img.at(x + 1, y - 1),
+                            img.at(x + 1, y),
+                            img.at(x + 1, y + 1),
+                            img.at(x, y + 1),
+                            img.at(x - 1, y + 1),
+                            img.at(x - 1, y),
+                            img.at(x - 1, y - 1),
+                        ];
+                        let b = p.iter().filter(|t| **t).count();
+                        if !(2..=6).contains(&b) {
+                            continue;
+                        }
+                        let a = (0..8).filter(|&i| !p[i] && p[(i + 1) % 8]).count();
+                        if a != 1 {
+                            continue;
+                        }
+                        let (c1, c2) = if step == 0 {
+                            (p[0] && p[2] && p[4], p[2] && p[4] && p[6])
+                        } else {
+                            (p[0] && p[2] && p[6], p[0] && p[4] && p[6])
+                        };
+                        if c1 || c2 {
+                            continue;
+                        }
+                        remove.push(y * w + x);
+                    }
+                }
+                if !remove.is_empty() {
+                    changed = true;
+                    for i in remove {
+                        img.v[i] = false;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        img
+    }
+
+
+    #[test]
+    fn same_skeleton_as_the_full_scan() {
+        // Thick diagonal and straight bands, a ring, and noise: the shapes the
+        // wall detector makes, and some it does not.
+        let (w, h) = (160, 120);
+        let mut seed = 12345u64;
+        let mut rnd = || { seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); (seed >> 33) as u32 };
+        let mut m = Mask::new(w, h, false);
+        for y in 0..h { for x in 0..w {
+            let d = (x as f32 * 0.6 + y as f32 * 0.8 - 60.0).abs();
+            let r = ((x as f32 - 110.0).powi(2) + (y as f32 - 40.0).powi(2)).sqrt();
+            let on = d < 9.0 || (y > 80 && y < 96 && x > 10 && x < 140) || (r > 14.0 && r < 26.0)
+                || rnd() % 37 == 0;
+            m.v[y * w + x] = on;
+        }}
+        assert_eq!(skeletonize(&m).v, skeletonize_reference(&m).v);
+        // And an empty and a full mask.
+        let e = Mask::new(w, h, false);
+        assert_eq!(skeletonize(&e).v, skeletonize_reference(&e).v);
+        let f = Mask::new(w, h, true);
+        assert_eq!(skeletonize(&f).v, skeletonize_reference(&f).v);
+    }
+}
+
+#[cfg(test)]
+mod fast_tests {
+    use super::*;
+
+    // The versions the faster ones replaced, kept to check them against.
+    /// 4-connected labelling, matching `scipy.ndimage.label`'s default structure.
+    /// Returns (labels, count); label 0 is background.
+    fn label_reference(m: &Mask) -> (Vec<u32>, usize) {
+        let (w, h) = (m.w, m.h);
+        let mut lab = vec![0u32; w * h];
+        let mut n = 0u32;
+        let mut stack: Vec<usize> = Vec::new();
+        for start in 0..w * h {
+            if !m.v[start] || lab[start] != 0 {
+                continue;
+            }
+            n += 1;
+            lab[start] = n;
+            stack.push(start);
+            while let Some(p) = stack.pop() {
+                let (x, y) = (p % w, p / w);
+                let push = |q: usize, stack: &mut Vec<usize>, lab: &mut Vec<u32>| {
+                    if m.v[q] && lab[q] == 0 {
+                        lab[q] = n;
+                        stack.push(q);
+                    }
+                };
+                if x > 0 { push(p - 1, &mut stack, &mut lab) }
+                if x + 1 < w { push(p + 1, &mut stack, &mut lab) }
+                if y > 0 { push(p - w, &mut stack, &mut lab) }
+                if y + 1 < h { push(p + w, &mut stack, &mut lab) }
+            }
+        }
+        (lab, n as usize)
+    }
+
+    fn dilate_reference(m: &Mask, se: &[(isize, isize)]) -> Mask {
+        // Gathered rather than scattered, so rows can be filled independently:
+        // a pixel is set if any pixel of the reflected element is.
+        let mut out = Mask::new(m.w, m.h, false);
+        let (w, h) = (m.w as isize, m.h as isize);
+        out.v.par_chunks_mut(m.w).enumerate().for_each(|(y, row)| {
+            crate::gen::throttle::gate();
+            for x in 0..m.w {
+                row[x] = se.iter().any(|(dx, dy)| {
+                    let (nx, ny) = (x as isize - dx, y as isize - dy);
+                    nx >= 0 && ny >= 0 && nx < w && ny < h && m.v[ny as usize * m.w + nx as usize]
+                });
+            }
+        });
+        out
+    }
+
+    fn erode_reference(m: &Mask, se: &[(isize, isize)]) -> Mask {
+        let mut out = Mask::new(m.w, m.h, false);
+        let (w, h) = (m.w as isize, m.h as isize);
+        out.v.par_chunks_mut(m.w).enumerate().for_each(|(y, row)| {
+            crate::gen::throttle::gate();
+            for x in 0..m.w {
+                let mut all = true;
+                for (dx, dy) in se {
+                    let (nx, ny) = (x as isize + dx, y as isize + dy);
+                    // scipy's binary_erosion pads with border_value = 0, so a pixel
+                    // whose structuring element hangs off the frame is eroded.
+                    if nx < 0 || ny < 0 || nx >= w || ny >= h || !m.at(nx as usize, ny as usize) {
+                        all = false;
+                        break;
+                    }
+                }
+                row[x] = all;
+            }
+        });
+        out
+    }
+
+
+    fn random_mask(w: usize, h: usize, seed: u64, density: u32) -> Mask {
+        let mut s = seed;
+        let mut m = Mask::new(w, h, false);
+        for i in 0..w * h {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            m.v[i] = ((s >> 33) as u32 % 100) < density;
+        }
+        // Some solid shapes as well as speckle, so components and holes of
+        // every size turn up.
+        for y in 0..h { for x in 0..w {
+            if (x / 13 + y / 9) % 3 == 0 && (x + 2 * y) % 31 > 4 { m.v[y * w + x] = true }
+        }}
+        m
+    }
+
+    #[test]
+    fn label_matches_flood_fill() {
+        for (seed, density) in [(1, 10), (2, 45), (3, 70), (4, 0), (5, 100)] {
+            let m = random_mask(97, 61, seed, density);
+            assert_eq!(label(&m), label_reference(&m), "seed {seed}");
+        }
+        let one_row = random_mask(50, 1, 9, 50);
+        assert_eq!(label(&one_row), label_reference(&one_row));
+    }
+
+    #[test]
+    fn morphology_matches_per_pixel() {
+        let lopsided: Vec<(isize, isize)> = vec![(0, 0), (2, -1), (-3, 1), (1, 3)];
+        for (seed, density) in [(11, 15), (12, 50), (13, 85)] {
+            let m = random_mask(83, 57, seed, density);
+            for se in [disk(1), disk(2), disk(3), lopsided.clone()] {
+                assert_eq!(dilate(&m, &se).v, dilate_reference(&m, &se).v, "dilate seed {seed}");
+                assert_eq!(erode(&m, &se).v, erode_reference(&m, &se).v, "erode seed {seed}");
+            }
+        }
+        // An element wider than the image erodes everything.
+        let m = random_mask(5, 4, 3, 90);
+        assert_eq!(erode(&m, &disk(6)).v, erode_reference(&m, &disk(6)).v);
+        assert_eq!(dilate(&m, &disk(6)).v, dilate_reference(&m, &disk(6)).v);
+    }
+}
+
+#[cfg(test)]
+mod quantile_tests {
+    use super::*;
+
+    #[test]
+    fn quantiles_match_sorting() {
+        let mut seed = 7u64;
+        let v: Vec<f32> = (0..10007).map(|i| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            if i % 97 == 0 { f32::NAN } else { ((seed >> 40) as f32 / 1000.0).round() }
+        }).collect();
+        let s = sorted_copy(&v);
+        let qs = [0.0, 0.0005, 0.03, 0.25, 0.5, 0.75, 0.97, 0.9995, 1.0];
+        let got = quantiles(&v, &qs);
+        for (q, g) in qs.iter().zip(&got) {
+            assert_eq!(g.to_bits(), quantile(&s, *q).to_bits(), "q {q}");
+        }
+        assert!(quantiles(&[], &[0.5])[0].is_nan());
+    }
 }

@@ -8,8 +8,11 @@ pub fn tidy(mask: &Mask, min_area: usize, close_r: usize, open_r: usize, max_hol
     if !mask.any() {
         return mask.clone();
     }
+    let t = super::Timer::start("    tidy: morph");
     let m = closing(mask, &disk(close_r));
     let mut m = opening(&m, &disk(open_r));
+    drop(t);
+    let _t = super::Timer::start("    tidy: label+holes");
 
     let (lab, n) = label(&m);
     if n > 0 {
@@ -105,9 +108,9 @@ pub fn analyze(height: &Grid, ppu: f64, edges: &[f32], step_thresh: f32) -> Anal
         // raw mask is a band as wide as the window. Reduce it to a centreline
         // and draw that at fixed weight: a wall is a LINE, and its drawn width
         // must not depend on the zoom level.
-        walls = closing(&walls, &disk(2));
-        walls = skeletonize(&walls);
-        walls = dilate(&walls, &disk(1));
+        walls = { let _t = super::Timer::start("    walls: closing"); closing(&walls, &disk(2)) };
+        walls = { let _t = super::Timer::start("    walls: skeleton"); skeletonize(&walls) };
+        walls = { let _t = super::Timer::start("    walls: dilate"); dilate(&walls, &disk(1)) };
     }
 
     // Size alone is the wrong filter. In open terrain thousands of scattered

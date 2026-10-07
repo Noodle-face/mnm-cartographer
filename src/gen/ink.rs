@@ -17,6 +17,7 @@ pub struct Rendered {
     pub dry: Mask,
 }
 
+#[derive(Clone)]
 pub struct Rgb {
     pub w: usize,
     pub h: usize,
@@ -145,8 +146,11 @@ pub fn render(height: &Grid, edges: &[f32], o: &InkOptions) -> Rendered {
     // by one tall outlier rather than by the spread of the ground you walk on.
     drop(_t1);
     let _t2 = super::Timer::start("  iqr sort");
-    let hv = sorted_copy(&a.hf.select(&a.land));
-    let iqr = if hv.is_empty() { 0.0 } else { quantile(&hv, 0.75) - quantile(&hv, 0.25) };
+    let hv = a.hf.select(&a.land);
+    let iqr = match quantiles(&hv, &[0.25, 0.75])[..] {
+        [q1, q3] if q1.is_finite() => q3 - q1,
+        _ => 0.0,
+    };
     let elev_w = (((iqr - 20.0) / 100.0) as f32).clamp(0.0, 1.0);
     let amount = 0.08 + 0.52 * elev_w;
 
@@ -156,30 +160,32 @@ pub fn render(height: &Grid, edges: &[f32], o: &InkOptions) -> Rendered {
     // Each band's smoothing is independent of the others.
     let softened: Vec<(usize, Mask)> =
         a.layers.par_iter().map(|(k, m)| (*k, soften(m, 1.2))).collect();
-    for (k, m) in &softened {
-        let f = *k as f32 / (nb.saturating_sub(1)).max(1) as f32;
-        for i in 0..w * h {
-            if m.v[i] && dry.v[i] {
-                for c in 0..3 {
-                    img[i][c] = floor[c] + (shadec[c] - floor[c]) * (1.0 - f) * amount;
-                }
+    // Bands are laid lowest first, each over the last, so a pixel ends up
+    // the colour of the highest band covering it: found per pixel, in
+    // parallel, rather than repainting the whole sheet once per band.
+    img.par_iter_mut().enumerate().for_each(|(i, px)| {
+        if !dry.v[i] { return }
+        if let Some((k, _)) = softened.iter().rev().find(|(_, m)| m.v[i]) {
+            let f = *k as f32 / (nb.saturating_sub(1)).max(1) as f32;
+            for c in 0..3 {
+                px[c] = floor[c] + (shadec[c] - floor[c]) * (1.0 - f) * amount;
             }
         }
-    }
+    });
     if let (Some(sea), true) = (o.sea, water.any()) {
         let wh: Vec<f32> = a.hf.select(&water);
         let span = {
             let s = sorted_copy(&wh);
             if s.is_empty() { 1.0 } else { (s[s.len() - 1] - s[0]).max(1.0) }
         };
-        for i in 0..w * h {
+        img.par_iter_mut().enumerate().for_each(|(i, px)| {
             if water.v[i] {
                 let d = ((sea - a.hf.v[i]) / span).clamp(0.0, 1.0);
                 for c in 0..3 {
-                    img[i][c] = waterc[c] + (deepc[c] - waterc[c]) * d;
+                    px[c] = waterc[c] + (deepc[c] - waterc[c]) * d;
                 }
             }
-        }
+        });
     }
 
     drop(_t3);
@@ -195,9 +201,9 @@ pub fn render(height: &Grid, edges: &[f32], o: &InkOptions) -> Rendered {
     // makes terrain legible. Only drawn where relief justifies it.
     let _t4 = super::Timer::start("  contours");
     if elev_w > 0.25 && dry.any() {
-        let hv2 = sorted_copy(&a.hf.select(&dry));
-        let lo = quantile(&hv2, 0.03);
-        let span = quantile(&hv2, 0.97) - lo;
+        let q = quantiles(&a.hf.select(&dry), &[0.03, 0.97]);
+        let lo = q[0];
+        let span = q[1] - lo;
         if span > 1e-6 {
             let step = span / 14.0;
             let q: Vec<f32> = a.hf.v.iter().map(|t| ((t - lo) / step).floor()).collect();
@@ -275,30 +281,18 @@ pub fn render(height: &Grid, edges: &[f32], o: &InkOptions) -> Rendered {
 
     let _t5 = super::Timer::start("  outlines+walls");
     // --- architecture + heavy outline -------------------------------------
-    for (k, m) in &softened {
-        if *k == 0 {
-            continue;
-        }
-        let o = outline(m, 1);
-        for i in 0..w * h {
-            if o.v[i] {
-                bump(&mut ink, i, 0.30);
-            }
-        }
-    }
-    for i in 0..w * h {
-        if a.walls.v[i] && dry.v[i] {
-            ink[i] = 0.9;
-        }
-    }
+    // Every step from here is per pixel, so each runs in parallel; their
+    // order is kept.
+    let band_lines: Vec<Mask> = softened.par_iter().filter(|(k, _)| *k != 0)
+        .map(|(_, m)| outline(m, 1)).collect();
+    ink.par_iter_mut().enumerate().for_each(|(i, v)| {
+        if band_lines.iter().any(|o| o.v[i]) && 0.30 > *v { *v = 0.30 }
+        if a.walls.v[i] && dry.v[i] { *v = 0.9 }
+    });
 
     if water.any() {
         let coast = outline(&dry, 3);
-        for i in 0..w * h {
-            if coast.v[i] {
-                ink[i] = 1.0;
-            }
-        }
+        ink.par_iter_mut().enumerate().for_each(|(i, v)| if coast.v[i] { *v = 1.0 });
         // The sea does not end -- the ocean-floor MESH ends, at a hard
         // rectangular border. Fade the water out where it meets the void so
         // the sheet reads as "ocean continues" rather than a cut edge.
@@ -308,29 +302,21 @@ pub fn render(height: &Grid, edges: &[f32], o: &InkOptions) -> Rendered {
         let fade_px = (70.0 * ppu).clamp(10.0, 90.0) as f32;
         let dl = distance_to_background(&land_s);
         let fade: Vec<f32> = dl.v.iter().map(|t| (t / fade_px).clamp(0.0, 1.0)).collect();
-        for i in 0..w * h {
+        let o2 = outline(&land_s, 2);
+        img.par_iter_mut().zip(ink.par_iter_mut()).enumerate().for_each(|(i, (px, v))| {
             if water.v[i] && fade[i] < 1.0 {
                 for c in 0..3 {
-                    img[i][c] = img[i][c] * fade[i] + paper[c] * (1.0 - fade[i]);
+                    px[c] = px[c] * fade[i] + paper[c] * (1.0 - fade[i]);
                 }
             }
             if water.v[i] {
-                ink[i] *= fade[i];
+                *v *= fade[i];
             }
-        }
-        let o2 = outline(&land_s, 2);
-        for i in 0..w * h {
-            if o2.v[i] {
-                bump(&mut ink, i, 0.65 * fade[i]);
-            }
-        }
+            if o2.v[i] && 0.65 * fade[i] > *v { *v = 0.65 * fade[i] }
+        });
     } else {
         let o = outline(&land_s, 3);
-        for i in 0..w * h {
-            if o.v[i] {
-                ink[i] = 1.0;
-            }
-        }
+        ink.par_iter_mut().enumerate().for_each(|(i, v)| if o.v[i] { *v = 1.0 });
     }
 
     drop(_t5);
@@ -475,6 +461,29 @@ pub fn draw_props(
             let t = a.to_radians();
             seg(img, px, py, (0.0, -r * 1.5), (r * 1.15 * t.cos(), -r * 1.5 + r * 1.15 * t.sin()));
         }
+    }
+    for (x, z) in props.get("conifer").map(|v| v.as_slice()).unwrap_or(&[]) {
+        let (px, py) = to_px(*x, *z);
+        let t = [(0.0, -r * 1.5), (r * 0.75, r * 0.3), (-r * 0.75, r * 0.3)];
+        for i in 0..3 { seg(img, px, py, t[i], t[(i + 1) % 3]) }
+        seg(img, px, py, (0.0, r * 0.3), (0.0, r * 0.8)); // trunk
+    }
+    for (x, z) in props.get("broadleaf").map(|v| v.as_slice()).unwrap_or(&[]) {
+        let (px, py) = to_px(*x, *z);
+        let k = 10;
+        for i in 0..k {
+            let (a, b) = (i as f32 / k as f32 * std::f32::consts::TAU, (i + 1) as f32 / k as f32 * std::f32::consts::TAU);
+            let c = (0.0, -r * 0.6);
+            seg(img, px, py, (c.0 + r * 0.8 * a.cos(), c.1 + r * 0.8 * a.sin()),
+                (c.0 + r * 0.8 * b.cos(), c.1 + r * 0.8 * b.sin()));
+        }
+        seg(img, px, py, (0.0, r * 0.2), (0.0, r * 0.8)); // trunk
+    }
+    for (x, z) in props.get("deadtree").map(|v| v.as_slice()).unwrap_or(&[]) {
+        let (px, py) = to_px(*x, *z);
+        seg(img, px, py, (0.0, r * 0.6), (0.0, -r * 1.1));
+        seg(img, px, py, (0.0, -r * 0.4), (-r * 0.7, -r * 1.0));
+        seg(img, px, py, (0.0, -r * 0.6), (r * 0.6, -r * 1.2));
     }
     for (x, z) in props.get("scrub").map(|v| v.as_slice()).unwrap_or(&[]) {
         let (px, py) = to_px(*x, *z);

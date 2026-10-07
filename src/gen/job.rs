@@ -148,6 +148,7 @@ impl Job {
                         &out,
                         &tiles::ZoneInput {
                             name: &name, tris: &tris, sea, props: &props, bbox: Some(bbox), tags: None,
+                            lights: None,
                         },
                         &tset,
                         |level, levels| {
@@ -391,6 +392,10 @@ pub struct Settings {
     /// Share of the CPU map building may use, in percent; see throttle.rs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_cpu: Option<u8>,
+    /// Show painted maps by the zone's own lights rather than in daylight;
+    /// see gen::light.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lamplight: bool,
     /// `rotations` are measured from the corrected north (world +X); older
     /// ones were cleared on upgrade.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -458,6 +463,8 @@ pub fn resolve_install(chosen: &Path) -> Option<PathBuf> {
 /// the painted style is an experiment, built on demand for the zone open.
 pub struct PaintJob {
     pub zone: String,
+    /// The floor being painted (index into `floors::plan`), if not the zone.
+    pub floor: Option<usize>,
     pub started: Instant,
     rx: Receiver<Result<PathBuf, String>>,
     progress: Arc<std::sync::Mutex<String>>,
@@ -467,10 +474,14 @@ pub struct PaintFrame {
     pub extent: [f64; 4],
     pub base_ppu: f64,
     pub zooms: usize,
+    /// Paint one floor of a zone built on top of itself -- an index into
+    /// `floors::plan`, 0 = lowest -- rather than the zone from above.
+    pub floor: Option<usize>,
 }
 
 impl PaintJob {
     pub fn start(install: PathBuf, zone: String, out: PathBuf, frame: PaintFrame) -> PaintJob {
+        let floor_i = frame.floor;
         super::throttle::set_limit(Settings::load().build_cpu());
         let (tx, rx) = channel();
         let progress = Arc::new(std::sync::Mutex::new("finding the zone".to_string()));
@@ -483,9 +494,30 @@ impl PaintJob {
                 let l = located.into_iter().find(|l| l.zone == z)
                     .ok_or_else(|| format!("{z} is not in this install"))?;
                 say("reading the game files");
-                let env = super::bundle::Env::open(&l.bundle).map_err(|e| e.to_string())?;
-                let shared = super::bundle::Shared::open(&install);
-                let lz = tiles::load_zone_with(&env, &shared, &l.group, true);
+                // The zone's bundle and the shared ones, opened side by side.
+                let (env, shared) = std::thread::scope(|s| {
+                    let sh = s.spawn(|| super::bundle::Shared::open(&install));
+                    let env = super::bundle::Env::open(&l.bundle).map_err(|e| e.to_string());
+                    (env, sh.join().expect("opening shared bundles panicked"))
+                });
+                let env = env?;
+                let mut lz = tiles::load_zone_with(&env, &shared, &l.group, true);
+                if let Some(i) = frame.floor {
+                    // The floor's slab, cut where its own map is cut.
+                    let plan = super::floors::plan(&z);
+                    let f = plan.get(i).ok_or_else(|| format!("{z} has no floor {}", i + 1))?;
+                    let lo = if i == 0 { f32::NEG_INFINITY } else { plan[i - 1].top };
+                    let on = |y: f32| y >= lo && y < f.top;
+                    let keep: Vec<bool> = lz.tris.iter()
+                        .map(|t| on((t[0][1] + t[1][1] + t[2][1]) / 3.0)).collect();
+                    lz.tris = super::bounds::apply(&lz.tris, &keep);
+                    lz.mats = super::bounds::apply(&lz.mats, &keep);
+                    lz.all_props = lz.prop_points.iter()
+                        .map(|(k, v)| (k.clone(), v.iter().filter(|p| on(p[1] as f32)).map(|p| (p[0], p[2])).collect()))
+                        .collect();
+                    // A floor's own lamps: those hanging within its slab.
+                    lz.lights.retain(|l| on(l.p[1] as f32));
+                }
                 if lz.tris.is_empty() { return Err("no walkable geometry".into()) }
                 let [ax, bx, az, bz] = frame.extent;
                 let mut level = |done: usize, total: usize| say(&format!("painting level {done}/{total}"));
@@ -493,14 +525,15 @@ impl PaintJob {
                 tiles::build_painted(&out,
                     &tiles::ZoneInput { name: &z, tris: &lz.tris, sea: lz.sea,
                                         props: &lz.all_props, bbox: None,
-                                        tags: Some((&lz.mats, &lz.mat_table)) },
-                    ((ax, bx, az, bz), frame.base_ppu), frame.zooms, &mut level)
+                                        tags: Some((&lz.mats, &lz.mat_table)),
+                                        lights: Some(&lz.lights) },
+                    ((ax, bx, az, bz), frame.base_ppu), frame.zooms, frame.floor.is_some(), &mut level)
                     .map_err(|e| e.to_string())?;
                 Ok(out)
             })();
             let _ = tx.send(res);
         });
-        PaintJob { zone, started: Instant::now(), rx, progress }
+        PaintJob { zone, floor: floor_i, started: Instant::now(), rx, progress }
     }
 
     /// The outcome once finished; None while still running.
@@ -558,7 +591,9 @@ pub fn run_zones<R: Send>(
     struct Slot { env: Option<Arc<Result<super::bundle::Env, String>>>, left: usize }
     let slots: Mutex<HashMap<PathBuf, Arc<Mutex<Slot>>>> = Mutex::new(
         left.into_iter().map(|(b, n)| (b, Arc::new(Mutex::new(Slot { env: None, left: n })))).collect());
-    let shared = super::bundle::Shared::open(install);
+    // The shared bundles open in the background while the first zones open
+    // their own; a zone that needs them before they are ready waits.
+    let shared = std::sync::OnceLock::new();
     let queue: Mutex<std::collections::VecDeque<(usize, zones::Located)>> =
         Mutex::new(order.into_iter().map(|(_, _, l)| l).enumerate().collect());
     let results: Mutex<Vec<(usize, R)>> = Mutex::new(Vec::new());
@@ -569,6 +604,7 @@ pub fn run_zones<R: Send>(
     let last_start: Mutex<Option<Instant>> = Mutex::new(None);
 
     std::thread::scope(|s| {
+        s.spawn(|| { shared.get_or_init(|| super::bundle::Shared::open(install)); });
         for _ in 0..lanes.max(1) {
             s.spawn(|| loop {
                 if cancel.load(Ordering::Relaxed) { return }
@@ -576,9 +612,16 @@ pub fn run_zones<R: Send>(
                     // One lane decides at a time, so two cannot both read the
                     // same free memory and both start.
                     let mut ls = last_start.lock().unwrap();
+                    // With room to spare, start at once. Only when memory runs
+                    // short are starts spaced out, so a reading is not taken
+                    // before the last zone's memory has climbed: spaced always,
+                    // 44 zones at five seconds apart held a full build to over
+                    // three and a half minutes whatever else got faster.
+                    let free = available_memory_gb();
+                    let recent = ls.is_some_and(|t| t.elapsed().as_secs() < 5);
                     let can = active.load(Ordering::Relaxed) == 0
-                        || (!ls.is_some_and(|t| t.elapsed().as_secs() < 5)
-                            && available_memory_gb().map_or(true, |gb| gb >= MIN_FREE_GB));
+                        || free.map_or(!recent, |gb| gb >= FIRST_LANE_GB
+                            || (!recent && gb >= MIN_FREE_GB));
                     if !can {
                         None
                     } else {
@@ -603,7 +646,7 @@ pub fn run_zones<R: Send>(
                         super::bundle::Env::open(&l.bundle).map_err(|e| e.to_string()))).clone()
                 };
                 let r = match env.as_ref() {
-                    Ok(e) => work(e, &shared, &l),
+                    Ok(e) => work(e, shared.get_or_init(|| super::bundle::Shared::open(install)), &l),
                     Err(msg) => on_open_failed(&l, msg),
                 };
                 drop(env);

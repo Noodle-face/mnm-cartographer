@@ -1,13 +1,25 @@
 ## What's new
 
-- **North is where players expect it** -- maps were a quarter-turn out: what
-  the compass called north was west. North now matches the community's world
-  map of Calafrey and Szurr, worked out from where each zone's scenery of its
-  neighbours lies. Every zone opens north-up; any turn you had saved is reset.
-- **Rebuild for upright symbols** -- maps built by earlier versions show palms,
-  tents and campfires on their sides. The sidebar says so and offers
-  **Rebuild maps** (about five minutes). Painted zones also need **Repaint this
-  map**.
+- **Lamplight** -- painted maps can now be shown lit by the zone's own lamps,
+  torches and glows: warm streets in Night Harbor, blue caverns and green
+  grottos in Underdocks. Choose **Daylight** or **Lamplight** under *Show
+  painted style*. Everything stays visible; the light colours the map, it does
+  not hide it.
+- **Buildings look like buildings** in the painted style: roofs in the game's
+  own colours, shaded by their pitch, with eaves and shadows on the street.
+  Night Harbor's palace dome is back -- it had been painted as dirt.
+- **Forests** -- trees are drawn from the game's own tree objects.
+- **Paint floors** -- each floor of a multi-storey zone can be painted.
+- **Markers stay on their floor** -- a marker placed on a floor shows only
+  there; set a marker's floor in its dialog.
+- **Much faster map building** -- building every map takes about half as
+  long as before (4:04 down to 2:12 at full speed on a 9800X3D), and painting
+  Night Harbor 22 seconds instead of 55. The maps come out exactly the same.
+- Fixed: props under a rotated group (all of Fallen Watch) were drawn in the
+  wrong place, and some bones were being drawn as pine trees.
+
+Painted maps from earlier versions keep their old look until you press
+**Repaint this map**.
 
 ## Install
 

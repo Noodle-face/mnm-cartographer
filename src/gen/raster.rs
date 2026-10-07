@@ -109,6 +109,18 @@ pub fn rasterize_tagged(tris: &[Tri], tags: &[u16], ppu: f64, bbox: Bbox) -> (Gr
     (finish(buf), tag)
 }
 
+/// The LOWEST surface in each pixel: the street under a roof, the floor of a
+/// room. With [`rasterize`] it says how far a surface stands above the ground
+/// it covers, which is how the painted style tells a roof from a plaza.
+pub fn rasterize_low(tris: &[Tri], ppu: f64, bbox: Bbox) -> Grid {
+    let (w, h) = raster_size(ppu, bbox);
+    let mut buf = Grid::new(w, h, f32::INFINITY);
+    for_each_sample(tris, ppu, bbox, |i, y| {
+        if y < buf.v[i] { buf.v[i] = y }
+    });
+    finish(buf)
+}
+
 /// A floor plan of a slab of a multi-storey zone: the LOWEST surface in each
 /// pixel, so a room shows rather than the roof over it -- unless something
 /// lies more than `over` above that surface, which is a bridge or walkway

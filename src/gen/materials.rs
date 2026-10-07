@@ -276,6 +276,21 @@ pub const CLOTH: u8 = 12;
 pub struct MatClass {
     pub base: u8,
     pub blend: [u8; 2],
+    /// The colour the game draws it, where that can be known: the material's
+    /// tint times its main texture's average (the base layer's, under the
+    /// layered shader most buildings use). [0, 0, 0] where it cannot, and
+    /// for terrains, whose layers are tinted at render time; those keep the
+    /// class's palette. Only roofs and built ground use it.
+    pub rgb: [u8; 3],
+    /// Its name says it is part of a building -- roof, dome, plaster, tiles
+    /// -- whatever its texture looks like.
+    pub structure: bool,
+}
+
+impl MatClass {
+    pub fn colour(&self) -> Option<[f32; 3]> {
+        (self.rgb != [0, 0, 0]).then(|| self.rgb.map(|c| c as f32))
+    }
 }
 
 /// Split "FantasyDesertSand_01" into lowercase words: fantasy desert sand 01.
@@ -297,6 +312,16 @@ fn words(s: &str) -> Vec<String> {
     out
 }
 
+/// Whether a name says what a thing IS, as a building part. That outranks
+/// what its texture looks like: Night Harbor's palace dome is textured
+/// "Loam_White", and its gold roof with a beach rock, but they are a dome and
+/// a roof, not dirt and rock.
+fn is_structure(name: &str) -> bool {
+    let joined = words(name).join(" ");
+    ["roof", "dome", "shingle", "plaster", "stucco", "palace", "spire", "tower", "building",
+     "cupola", "turret", "slate"].iter().any(|k| joined.contains(k))
+}
+
 /// The class a name says, or UNKNOWN.
 pub fn classify(name: &str) -> u8 {
     let w = words(name);
@@ -305,6 +330,7 @@ pub fn classify(name: &str) -> u8 {
     let word = |keys: &[&str]| w.iter().any(|x| keys.contains(&x.as_str()));
     // Placeholder and debug materials say nothing about the ground.
     if has(&["probuilder", "gridbox", "flatred", "matteblack", "default"]) { return UNKNOWN }
+    if is_structure(name) { return STONE }
     // A cliff texture is reused freely -- Underdocks' generic cliff is
     // "Ice_Cliff" -- so "cliff" outranks whatever else the name says.
     if has(&["cliff"]) { return ROCK }
@@ -339,7 +365,8 @@ pub fn classify(name: &str) -> u8 {
 fn class_of_material(env: &Env, shared: &Shared, at: At) -> MatClass {
     let sf = &at.env.col.serialized_files()[at.file].file;
     let Ok(mat) = read_material(sf, at.obj, MaterialReadLimits::default()) else {
-        return MatClass { base: classify(&name_of(at)), blend: [UNKNOWN; 2] };
+        let n = name_of(at);
+        return MatClass { base: classify(&n), blend: [UNKNOWN; 2], rgb: [0; 3], structure: is_structure(&n) };
     };
     let _ = env;
     let tex = |prop: &str| -> Option<String> {
@@ -350,19 +377,64 @@ fn class_of_material(env: &Env, shared: &Shared, at: At) -> MatClass {
     };
     let by = |prop: &str| tex(prop).map_or(UNKNOWN, |n| classify(&n));
     let own = classify(&mat.name);
-    let base = match by("_BaseLayerDiffuse") {
+    // Even under the layered shader, whose base layer otherwise decides.
+    let base = if is_structure(&mat.name) { STONE } else { match by("_BaseLayerDiffuse") {
         UNKNOWN => match own {
             UNKNOWN => ["_MainTex", "_BaseMap", "_BaseColorMap"].iter()
                 .map(|p| by(p)).find(|c| *c != UNKNOWN).unwrap_or(UNKNOWN),
             c => c,
         },
         c => c,
-    };
+    } };
     let b1 = by("_BlendLayer1Diffuse");
     let b2 = by("_BlendLayer2Diffuse");
     // A blend layer of the same class as the base adds nothing.
     let clean = |c: u8| if c == base { UNKNOWN } else { c };
-    MatClass { base, blend: [clean(b1), clean(b2)] }
+    // The colour: tint times the main texture -- under the layered shader,
+    // its base layer. That shader is what most of the game's buildings use,
+    // not only its terrain.
+    let tint = mat.saved_properties.colors.iter()
+        .find(|c| c.name == "_BaseColor" || c.name == "_Color").map(|c| c.value);
+    let main = ["_BaseLayerDiffuse", "_BaseColorMap", "_BaseMap", "_MainTex", "_Albedo"].iter().find_map(|prop| {
+        let t = mat.saved_properties.texture_environments.iter().find(|t| t.name == *prop)?;
+        let p = PPtr { file: t.value.texture.file_id as i64, path_id: t.value.texture.path_id };
+        if p.is_null() { return None }
+        resolve(at.env, shared, at.file, p)
+    });
+    let rgb = {
+        let t = tint.map_or([1.0; 3], |c| [c[0], c[1], c[2]]);
+        let m = main.and_then(small_mean);
+        match (m, tint) {
+            (None, None) => [0; 3],
+            (m, _) => {
+                let m = m.unwrap_or([1.0; 3]);
+                let c = [m[0] * t[0], m[1] * t[1], m[2] * t[2]].map(|v| (v * 255.0).clamp(1.0, 255.0) as u8);
+                // Black is what an unset or failed texture gives, not a colour.
+                if c.iter().map(|&v| v as u32).sum::<u32>() < 24 { [0; 3] } else { c }
+            }
+        }
+    };
+    let structure = is_structure(&mat.name) || main.is_some_and(|t| is_structure(&name_of(t)));
+    MatClass { base, blend: [clean(b1), clean(b2)], rgb, structure }
+}
+
+/// Average colour (0..1) of a texture, from a mip about 64 pixels across:
+/// plenty for a mean, and cheap where the top level is 2048 square.
+fn small_mean(at: At) -> Option<[f32; 3]> {
+    let sf = &at.env.col.serialized_files()[at.file].file;
+    let lim = TextureReadLimits::default();
+    let t = read_texture2d(&at.env.col, sf, at.obj, lim).ok()?;
+    let mut lvl = 0;
+    while lvl + 1 < t.mip_count && t.mip_dimensions(lvl).is_ok_and(|(w, h)| w.max(h) > 64) {
+        lvl += 1;
+    }
+    let img = t.decode_mip_rgba8(lvl, lim).or_else(|_| t.decode_mip_rgba8(0, lim)).ok()?;
+    let (mut s, mut k) = ([0f64; 3], 0f64);
+    for p in img.pixels.chunks_exact(4) {
+        for c in 0..3 { s[c] += p[c] as f64 }
+        k += 1.0;
+    }
+    (k > 0.0).then(|| [(s[0] / k / 255.0) as f32, (s[1] / k / 255.0) as f32, (s[2] / k / 255.0) as f32])
 }
 
 /// For a mesh collider's GameObject: the class of each of its renderer's
@@ -417,6 +489,8 @@ pub fn terrain_class(env: &Env, shared: &Shared, file: usize, td: &TypeValue) ->
         }
     }
     MatClass {
+        rgb: [0; 3],
+        structure: false,
         base: cls.first().copied().unwrap_or(UNKNOWN),
         blend: [cls.get(1).copied().unwrap_or(UNKNOWN), cls.get(2).copied().unwrap_or(UNKNOWN)],
     }

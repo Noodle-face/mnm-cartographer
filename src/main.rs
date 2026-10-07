@@ -149,6 +149,8 @@ struct Editing {
     reqs: markers::Reqs,
     /// Level is edited as text so the field can be left blank.
     req_level: String,
+    /// Which floor it is on, in a zone with floors; see Marker::floor.
+    floor: Option<u8>,
     creating: bool,
 }
 
@@ -163,6 +165,11 @@ struct App {
     /// The current zone's painted map, if one has been made, and whether it
     /// is the one on screen. An experiment; see gen::paint.
     painted: Option<Pyramid>,
+    /// The painted version of each floor, where one has been made.
+    floors_painted: Vec<Option<Pyramid>>,
+    /// The Lamplight versions of the zone's and each floor's painted map.
+    lamplit: Option<Pyramid>,
+    floors_lamplit: Vec<Option<Pyramid>>,
     show_painted: bool,
     paint_job: Option<gen::job::PaintJob>,
     paint_note: String,
@@ -285,9 +292,13 @@ impl App {
             .map(|p| MarkerSet::load(&p.markers_path(&base)))
             .unwrap_or_else(|| MarkerSet::empty(base.join("markers/none.json")));
         let floors = maps.get(cur).map(|p| pyramid::floors_of(&p.path)).unwrap_or_default();
+        let floors_painted = floors.iter().map(|f| pyramid::painted_of(&f.path)).collect();
+        let floors_lamplit = floors.iter().map(|f| pyramid::lamplight_of(&f.path)).collect();
+        let lamplit = maps.get(cur).and_then(|p| pyramid::lamplight_of(&p.path));
         let painted = maps.get(cur).and_then(|p| pyramid::painted_of(&p.path));
         Self {
             base, maps, cur, floors, floor: None, mset, graph, watcher,
+            floors_painted, floors_lamplit, lamplit,
             painted, show_painted: false, paint_job: None, paint_note: String::new(),
             follow: true, show_legend: true,
             scale: 1.0, offset: egui::Vec2::ZERO, rot, rotating: false,
@@ -560,6 +571,16 @@ impl App {
     /// Shared by the map and the list deliberately: two separate conditions
     /// drift, and a marker visible in one but not the other is baffling.
     fn visible(&self, m: &markers::Marker) -> bool {
+        // A floor shows what is on it; the top level shows the whole zone.
+        if let Some(n) = self.floor_number() {
+            if m.floor != Some(n) { return false }
+        }
+        self.passes_filters(m)
+    }
+
+    /// The kind, source and text filters alone: what the search of other
+    /// zones applies, where the floor on screen means nothing.
+    fn passes_filters(&self, m: &markers::Marker) -> bool {
         if self.hidden_kinds.contains(&m.kind) {
             return false;
         }
@@ -1133,16 +1154,46 @@ impl App {
     /// top-level map. Floors share the zone's frame exactly, so everything
     /// else -- extent, zoom levels, markers -- still comes from `pyr`.
     fn view_pyr(&self) -> Option<&Pyramid> {
+        if self.show_painted {
+            if let Some(p) = self.painted_here() { return Some(p) }
+        }
         match self.floor {
             Some(i) => self.floors.get(i),
-            None if self.show_painted && self.painted.is_some() => self.painted.as_ref(),
             None => self.pyr(),
         }
     }
 
-    /// Start painting the open zone in the background.
+    /// The painted version of what is on screen -- the zone, or the floor
+    /// shown -- if one has been made.
+    fn painted_here(&self) -> Option<&Pyramid> {
+        if self.settings.lamplight {
+            if let Some(p) = self.lamplit_here() { return Some(p) }
+        }
+        match self.floor {
+            Some(i) => self.floors_painted.get(i).and_then(|p| p.as_ref()),
+            None => self.painted.as_ref(),
+        }
+    }
+
+    /// The Lamplight version of what is on screen, if one has been made.
+    fn lamplit_here(&self) -> Option<&Pyramid> {
+        match self.floor {
+            Some(i) => self.floors_lamplit.get(i).and_then(|p| p.as_ref()),
+            None => self.lamplit.as_ref(),
+        }
+    }
+
+    /// Start painting what is on screen -- the zone, or the floor shown --
+    /// in the background.
     fn start_paint(&mut self) {
-        let Some(p) = self.pyr() else { return };
+        let Some(zone) = self.pyr().map(|p| p.name.clone()) else { return };
+        let (p, floor) = match self.floor {
+            Some(i) => match self.floors.get(i) {
+                Some(f) => (f, f.floor.as_ref().map(|(n, _)| n.saturating_sub(1))),
+                None => return,
+            },
+            None => match self.pyr() { Some(p) => (p, None), None => return },
+        };
         let Some(install) = self.settings.resolve() else {
             self.paint_note = "Game install not found \u{2014} set it in Maps\u{2026}".into();
             return;
@@ -1151,11 +1202,18 @@ impl App {
             extent: p.extent,
             base_ppu: p.levels.first().map_or(1.0, |l| l.ppu),
             zooms: p.levels.len(),
+            floor,
         };
         let out = pyramid::painted_path(&p.path);
-        let name = p.name.clone();
+        let name = zone;
         // A rebuild replaces the file; let go of the old one first.
-        self.painted = None;
+        match self.floor {
+            Some(i) => {
+                if let Some(slot) = self.floors_painted.get_mut(i) { *slot = None }
+                if let Some(slot) = self.floors_lamplit.get_mut(i) { *slot = None }
+            }
+            None => { self.painted = None; self.lamplit = None }
+        }
         self.show_painted = false;
         self.textures.clear();
         self.paint_note.clear();
@@ -1168,14 +1226,27 @@ impl App {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
         let Some(res) = job.poll() else { return };
         let zone = job.zone.clone();
+        let job_floor = job.floor;
         let secs = job.started.elapsed().as_secs_f32();
         self.paint_job = None;
         match res {
             Ok(path) => {
                 // Only show it if the zone is still the one open.
                 if self.pyr().is_some_and(|p| p.name == zone) {
-                    self.painted = Pyramid::open(&path).ok();
-                    self.show_painted = self.painted.is_some();
+                    let made = Pyramid::open(&path).ok();
+                    let lamp = Pyramid::open(&gen::tiles::lamplight_path(&path)).ok();
+                    match job_floor {
+                        Some(fi) => {
+                            let at = self.floors.iter()
+                                .position(|f| f.floor.as_ref().is_some_and(|(n, _)| n.saturating_sub(1) == fi));
+                            if let Some(i) = at {
+                                if let Some(slot) = self.floors_painted.get_mut(i) { *slot = made }
+                                if let Some(slot) = self.floors_lamplit.get_mut(i) { *slot = lamp }
+                            }
+                        }
+                        None => { self.painted = made; self.lamplit = lamp }
+                    }
+                    self.show_painted = self.painted_here().is_some();
                     self.textures.clear();
                 }
                 self.paint_note = format!("painted {} in {secs:.0}s", self.graph.pretty(&zone));
@@ -1204,6 +1275,9 @@ impl App {
         self.floors = pyramid::floors_of(&self.maps[i].path);
         self.floor = None;
         self.painted = pyramid::painted_of(&self.maps[i].path);
+        self.floors_painted = self.floors.iter().map(|f| pyramid::painted_of(&f.path)).collect();
+        self.lamplit = pyramid::lamplight_of(&self.maps[i].path);
+        self.floors_lamplit = self.floors.iter().map(|f| pyramid::lamplight_of(&f.path)).collect();
         self.show_painted = false;
         self.rot = self.settings.rotations.get(&self.maps[i].name)
             .map_or(0.0, |d| d.to_radians());
@@ -1502,7 +1576,7 @@ const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
 impl App {
     /// Debug builds only: `MNM_SHOT=out.png` puts the app in the states
     /// listed in `MNM_SHOT_STATE` (comma-separated: help, ring, overlay,
-    /// playing, find=<text>, share, maps, zone=<name>, painted, zoom=<factor>,
+    /// playing, find=<text>, share, maps, zone=<name>, painted, lamp, zoom=<factor>,
     /// at=<x>:<z>), saves a screenshot of its own window and
     /// exits. For checking the UI without a person at the screen.
     fn dev_shot(&mut self, ctx: &egui::Context) {
@@ -1516,7 +1590,8 @@ impl App {
                     ("maps", _) => { self.maps_open = true; self.refresh_zone_list() }
                     ("zone", z) => if let Some(i) = self.maps.iter()
                         .position(|m| m.name.eq_ignore_ascii_case(z)) { self.open_zone(i) },
-                    ("painted", _) => if self.painted.is_some() {
+                    ("lamp", _) => self.settings.lamplight = true,
+                    ("painted", _) => if self.painted_here().is_some() {
                         self.show_painted = true;
                         self.textures.clear();
                     },
@@ -1917,7 +1992,9 @@ impl App {
                         });
                     }
                     None => {
-                        let label = if self.painted.is_some() { "Repaint this map" } else { "Paint this map" };
+                        let what = if self.floor.is_some() { "floor" } else { "map" };
+                        let label = if self.painted_here().is_some() { format!("Repaint this {what}") }
+                                    else { format!("Paint this {what}") };
                         if ui.add_enabled(self.pyr().is_some(), egui::Button::new(label))
                             .on_hover_text("Render this zone in the painted style from your game \
                                             files. Takes a minute or so; the inked map stays as it is.")
@@ -1927,10 +2004,31 @@ impl App {
                         }
                     }
                 }
-                if self.painted.is_some() {
+                if self.painted_here().is_some() {
                     let before = self.show_painted;
                     ui.checkbox(&mut self.show_painted, "Show painted style");
                     if before != self.show_painted { self.textures.clear() }
+                    if self.show_painted {
+                        let has_lamp = self.lamplit_here().is_some();
+                        let mut lamp = self.settings.lamplight;
+                        ui.horizontal(|ui| {
+                            ui.radio_value(&mut lamp, false, "Daylight")
+                                .on_hover_text("What everything is made of, as if in full daylight");
+                            ui.add_enabled_ui(has_lamp, |ui| {
+                                ui.radio_value(&mut lamp, true, "Lamplight")
+                                    .on_hover_text("Coloured by the zone's own lamps, torches and glows, \
+                                                    as it looks underground or at night. Everything stays visible.")
+                                    .on_disabled_hover_text("No Lamplight for this map: either the zone has \
+                                                             no lamps of its own to colour it, or it was painted \
+                                                             before Lamplight existed -- Repaint to make one.");
+                            });
+                        });
+                        if lamp != self.settings.lamplight {
+                            self.settings.lamplight = lamp;
+                            self.settings.save();
+                            self.textures.clear();
+                        }
+                    }
                 }
                 if !self.paint_note.is_empty() {
                     ui.label(egui::RichText::new(&self.paint_note).size(10.0).weak());
@@ -2081,7 +2179,7 @@ impl App {
             for (zi, p) in self.maps.iter().enumerate() {
                 if zi == self.cur { continue }
                 for m in MarkerSet::load(&p.markers_path(&self.base)).items {
-                    if self.visible(&m) { hits.push((zi, m)) }
+                    if self.passes_filters(&m) { hits.push((zi, m)) }
                 }
             }
             hits.sort_by(|a, b| (self.graph.pretty(&self.maps[a.0].name), &a.1.label)
@@ -2117,9 +2215,26 @@ impl App {
 
     /// Index of the marker under a screen position, if any.
     fn marker_at(&self, p: egui::Pos2) -> Option<usize> {
+        // Only what is drawn can be grabbed: a marker hidden by a filter or
+        // on another floor must not be dragged from under the cursor.
         self.mset.items.iter().position(|m| {
-            (self.world_to_screen(m.x, m.z) - p).length() < icons::RADIUS + 2.0
+            self.visible(m) && (self.world_to_screen(m.x, m.z) - p).length() < icons::RADIUS + 2.0
         })
+    }
+
+    /// The number of the floor on screen (1 = lowest), or None at the top
+    /// level.
+    fn floor_number(&self) -> Option<u8> {
+        let i = self.floor?;
+        self.floors.get(i).and_then(|p| p.floor.as_ref()).map(|(n, _)| *n as u8)
+    }
+
+    /// A marker just placed belongs to the floor it was placed on.
+    fn place_on_floor(&mut self, id: &str) {
+        let n = self.floor_number();
+        if n.is_none() { return }
+        if let Some(m) = self.mset.get_mut(id) { m.floor = n }
+        let _ = self.mset.save();
     }
 
     /// Resolve a marker's `link` to (zone index, marker index).
@@ -2181,6 +2296,7 @@ impl App {
                 link: m.link.clone(),
                 req_level: m.reqs.level.map(|l| l.to_string()).unwrap_or_default(),
                 reqs: m.reqs.clone(),
+                floor: m.floor,
                 creating,
             });
         }
@@ -2569,13 +2685,15 @@ impl App {
         if mid.on_hover_text("A marker with a label and note").clicked() { details = true; took = true }
         if let Some(k) = place {
             self.mset.checkpoint();
-            self.mset.add(wx, wz, "", KINDS[k].key, "");
+            let id = self.mset.add(wx, wz, "", KINDS[k].key, "");
+            self.place_on_floor(&id);
             self.status = format!("added {} \u{2014} click it to add a note", KINDS[k].label.to_lowercase());
             self.radial = None;
         } else if details {
             // Created provisionally so the dialog edits a real record; removed
             // again if the user cancels.
             let id = self.mset.add(wx, wz, "", KINDS[0].key, "");
+            self.place_on_floor(&id);
             self.begin_edit(&id, true);
             self.radial = None;
         }
@@ -2786,6 +2904,13 @@ impl App {
         // Resolve the travel target before taking a mutable borrow of
         // self.editing -- it needs &self.maps and &self.graph.
         let Some(edit_id) = self.editing.as_ref().map(|e| e.id.clone()) else { return };
+        // The zone's floors, to say which one a marker is on.
+        let floor_opts: Vec<(Option<u8>, String)> = if self.floors.is_empty() { Vec::new() } else {
+            std::iter::once((None, "Whole zone (top level)".to_string()))
+                .chain(self.floors.iter().filter_map(|p| p.floor.as_ref())
+                    .map(|(n, name)| (Some(*n as u8), format!("{n}  {name}"))))
+                .collect()
+        };
         let travel = self.mset.items.iter().find(|m| m.id == edit_id)
             .and_then(|m| self.travel_target(m));
         let zname = travel.map(|z| self.graph.pretty(&self.maps[z].name)).unwrap_or_default();
@@ -2835,6 +2960,18 @@ impl App {
                             }
                         });
                     ui.end_row();
+                    if !floor_opts.is_empty() {
+                        ui.label("Floor");
+                        let cur = floor_opts.iter().find(|o| o.0 == ed.floor)
+                            .map_or_else(|| "?".to_string(), |o| o.1.clone());
+                        egui::ComboBox::from_id_salt("mkfloor").width(280.0).selected_text(cur)
+                            .show_ui(ui, |ui| {
+                                for (v, txt) in &floor_opts {
+                                    ui.selectable_value(&mut ed.floor, *v, txt.as_str());
+                                }
+                            });
+                        ui.end_row();
+                    }
                     ui.label("Linked to");
                     egui::ComboBox::from_id_salt("mklink")
                         .width(280.0)
@@ -2900,8 +3037,8 @@ impl App {
         let creating = ed.creating;
         let id = ed.id.clone();
 
-        let (label, kindi, note, link) =
-            (ed.label.clone(), ed.kind, ed.note.clone(), ed.link.clone());
+        let (label, kindi, note, link, floor) =
+            (ed.label.clone(), ed.kind, ed.note.clone(), ed.link.clone(), ed.floor);
         let mut reqs = ed.reqs.clone();
         // A blank or unparseable level means "no level requirement" rather
         // than zero, which would read as a real gate.
@@ -2924,7 +3061,7 @@ impl App {
             self.mset.checkpoint();
             if let Some(m) = self.mset.get_mut(&id) {
                 m.label = label; m.kind = KINDS[kindi].key.into(); m.note = note;
-                m.link = link; m.reqs = reqs;
+                m.link = link; m.reqs = reqs; m.floor = floor;
             }
             let _ = self.mset.save();
             self.editing = None;
@@ -2979,7 +3116,7 @@ fn main() -> eframe::Result<()> {
             "--extract" => 2,
             "--dump-tris" | "--dump-all-tris" => 3,
             "--classes" | "--terrains" | "--externals" => 2,
-            "--dump-zones" | "--paint" | "--materials" => 1,
+            "--dump-zones" | "--paint" | "--materials" | "--floor" => 1,
             "--render-tris" => 7,
             "--render" => 4,
             _ => 0,
@@ -3087,11 +3224,23 @@ fn main() -> eframe::Result<()> {
             return Ok(());
         };
         let install = gen::job::Settings::load().resolve().expect("game install not found");
-        let out = pyramid::painted_path(&p.path);
+        // --floor N paints floor N (1 = lowest) into that floor's frame.
+        let floor = args.iter().position(|a| a == "--floor")
+            .and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<usize>().ok());
+        let target = match floor {
+            Some(n) => match pyramid::floors_of(&p.path).into_iter()
+                .find(|f| f.floor.as_ref().is_some_and(|(k, _)| *k == n)) {
+                Some(f) => f,
+                None => { eprintln!("{} has no built floor {n}", p.name); return Ok(()) }
+            },
+            None => Pyramid::open(&p.path).expect("open map"),
+        };
+        let out = pyramid::painted_path(&target.path);
         let job = gen::job::PaintJob::start(install, p.name.clone(), out, gen::job::PaintFrame {
-            extent: p.extent,
-            base_ppu: p.levels.first().map_or(1.0, |l| l.ppu),
-            zooms: p.levels.len(),
+            extent: target.extent,
+            base_ppu: target.levels.first().map_or(1.0, |l| l.ppu),
+            zooms: target.levels.len(),
+            floor: floor.map(|n| n - 1),
         });
         let mut last = String::new();
         loop {
@@ -3388,6 +3537,7 @@ fn main() -> eframe::Result<()> {
                     reqs: Default::default(),
                     src: "debug".into(),
                     added: stamp.clone(),
+                    floor: None,
                 });
                 total += 1;
             }
@@ -3619,7 +3769,7 @@ fn main() -> eframe::Result<()> {
             }
             match gen::tiles::build_zone(&dest,
                 &gen::tiles::ZoneInput { name: &l.zone, tris: &tris, sea, props: &props,
-                                         bbox: Some(bbox), tags: None },
+                                         bbox: Some(bbox), tags: None, lights: None },
                 &gen::tiles::Settings {
                     floors: !args.iter().any(|a| a == "--no-floors"),
                     floors_only,

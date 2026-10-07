@@ -210,11 +210,13 @@ pub struct Stats {
 /// and holds at least ten colliders -- a handful under "Palace_Facade" is a
 /// building front, not backdrop.
 pub fn backdrop(env: &Env, files: &[usize]) -> HashSet<(usize, usize)> {
+    let _t = super::Timer::start("    backdrop");
     const MIN_FACADE: usize = 10;
     let mut root_of: HashMap<(usize, usize), Option<((usize, usize), bool)>> = HashMap::new();
     let mut members: HashMap<(usize, usize), Vec<(usize, usize)>> = HashMap::new();
     let mut distant: HashSet<(usize, usize)> = HashSet::new();
     let mut colliders: HashMap<(usize, usize), usize> = HashMap::new();
+    let mut names = Names::default();
     for &fi in files {
         let count = env.col.serialized_files()[fi].file.objects.len();
         for oi in 0..count {
@@ -226,7 +228,7 @@ pub fn backdrop(env: &Env, files: &[usize]) -> HashSet<(usize, usize)> {
             else { continue };
             let Some(go) = env.read(go_at.0, go_at.1) else { continue };
             let Some(tr) = transform_of(env, go_at.0, &go) else { continue };
-            if leftover(&names_up(env, tr)) {
+            if leftover(&names.up(env, tr)) {
                 // A leftover group stands alone; key it by its own component.
                 members.entry((fi, oi)).or_default().push((fi, oi));
                 distant.insert((fi, oi));
@@ -320,22 +322,52 @@ pub fn is_boundary_name(path: &[String]) -> bool {
     })
 }
 
-/// The name of the GameObject at transform `tr` and of every object above it.
-fn names_up(env: &Env, tr: (usize, usize)) -> Vec<String> {
-    let mut v = ancestry(env, tr);
-    if let Some(n) = env.read(tr.0, tr.1)
-        .and_then(|t| as_pptr(field(&t, "m_GameObject")))
-        .and_then(|p| env.resolve(tr.0, p))
-        .and_then(|g| env.read(g.0, g.1))
-        .and_then(|g| as_str(field(&g, "m_Name")).map(String::from)) {
-        v.push(n);
-    }
-    v
+/// Names up transform chains, each transform read once. Walking a chain
+/// re-read and re-parsed every ancestor for every object, and the same few
+/// thousand parents were parsed over and over: in Night Harbor that was 10
+/// seconds a pass, and two passes made it two-fifths of a whole build.
+#[derive(Default)]
+pub struct Names {
+    at: HashMap<(usize, usize), (String, Option<(usize, usize)>)>,
 }
+
+impl Names {
+    fn entry(&mut self, env: &Env, tr: (usize, usize)) -> (String, Option<(usize, usize)>) {
+        if let Some(e) = self.at.get(&tr) { return e.clone() }
+        let t = env.read(tr.0, tr.1);
+        let name = t.as_ref().and_then(|t| as_pptr(field(t, "m_GameObject")))
+            .and_then(|p| env.resolve(tr.0, p))
+            .and_then(|g| env.read(g.0, g.1))
+            .and_then(|g| as_str(field(&g, "m_Name")).map(String::from))
+            .unwrap_or_default();
+        let father = t.as_ref().and_then(|t| as_pptr(field(t, "m_Father")))
+            .and_then(|p| env.resolve(tr.0, p));
+        self.at.insert(tr, (name.clone(), father));
+        (name, father)
+    }
+
+    /// The name of the object at `tr` and of every object above it, the
+    /// topmost first -- as [`names_up`], without re-reading.
+    pub fn up(&mut self, env: &Env, tr: (usize, usize)) -> Vec<String> {
+        let mut v = Vec::new();
+        let mut cur = Some(tr);
+        // A cycle in m_Father, or absurd nesting, stops here.
+        for _ in 0..65 {
+            let Some(at) = cur else { break };
+            let (name, father) = self.entry(env, at);
+            v.push(name);
+            cur = father;
+        }
+        v.reverse();
+        v
+    }
+}
+
 
 /// Solid, enabled box colliders on boundary-named objects, as world boxes.
 fn boundary_boxes(env: &Env, files: &[usize], hier: &mut Hierarchy,
                   active: &mut HashMap<(usize, usize), bool>) -> Vec<[f64; 6]> {
+    let mut names = Names::default();
     let mut out = Vec::new();
     for &fi in files {
         let count = env.col.serialized_files()[fi].file.objects.len();
@@ -350,7 +382,7 @@ fn boundary_boxes(env: &Env, files: &[usize], hier: &mut Hierarchy,
             let Some(go) = env.read(go_at.0, go_at.1) else { continue };
             let Some(tr) = transform_of(env, go_at.0, &go) else { continue };
             if !active_in_hierarchy(env, tr, active) { continue }
-            if !is_boundary_name(&names_up(env, tr)) { continue }
+            if !is_boundary_name(&names.up(env, tr)) { continue }
             let m = hier.world(env, tr);
             let sz = vec3(field(&bc, "m_Size"), 1.0, 1.0, 1.0);
             let c = vec3(field(&bc, "m_Center"), 0.0, 0.0, 0.0);
@@ -367,16 +399,18 @@ pub fn extract_floors(env: &Env, shared: &Shared, files: &[usize]) -> Floors {
     extract_faces(env, shared, files, 0.5)
 }
 
-/// As [`extract_floors`], with each triangle tagged by what it is made of
-/// (`Floors::mats`, indexing `Floors::mat_table`).
-pub fn extract_floors_tagged(env: &Env, shared: &Shared, files: &[usize]) -> Floors {
-    extract_inner(env, shared, files, 0.5, true)
+
+/// As [`extract_floors`], optionally tagging what each triangle is made of, given the zone's
+/// [`backdrop`] -- worked out once and shared with [`landmarks_with`].
+pub fn extract_floors_with(env: &Env, shared: &Shared, files: &[usize], tagged: bool,
+                           skip: &HashSet<(usize, usize)>) -> Floors {
+    extract_inner(env, shared, files, 0.5, tagged, Some(skip))
 }
 
 /// World-space triangles whose normal has an upward component of at least
 /// `min_ny`. Below -1 keeps every face, walls and ceilings included.
 pub fn extract_faces(env: &Env, shared: &Shared, files: &[usize], min_ny: f32) -> Floors {
-    extract_inner(env, shared, files, min_ny, false)
+    extract_inner(env, shared, files, min_ny, false, None)
 }
 
 /// Interns material classes into a small table; triangles carry an index.
@@ -399,15 +433,21 @@ impl Tags {
     }
 }
 
-fn extract_inner(env: &Env, shared: &Shared, files: &[usize], min_ny: f32, tagged: bool) -> Floors {
+fn extract_inner(env: &Env, shared: &Shared, files: &[usize], min_ny: f32, tagged: bool,
+                 skip: Option<&HashSet<(usize, usize)>>) -> Floors {
     let mut tags = Tags { on: tagged, ..Default::default() };
     let mut out: Vec<Tri> = Vec::new();
     let mut walls: Vec<Tri> = Vec::new();
     let mut unresolved = 0usize;
     let mut st = Stats::default();
     let mut hier = Hierarchy::default();
-    let skip = backdrop(env, files);
+    let own_skip;
+    let skip = match skip {
+        Some(s) => s,
+        None => { own_skip = backdrop(env, files); &own_skip }
+    };
     let mut active = HashMap::new();
+    let mut names = Names::default();
 
     for &fi in files {
         let count = env.col.serialized_files()[fi].file.objects.len();
@@ -442,7 +482,7 @@ fn extract_inner(env: &Env, shared: &Shared, files: &[usize], min_ny: f32, tagge
             }
             // Boundary geometry marks the zone's edge; it is not ground, and
             // a boundary "ceiling" drawn as floor would blank the map.
-            let boundary = is_boundary_name(&names_up(env, tr));
+            let boundary = is_boundary_name(&names.up(env, tr));
 
             // The mesh is in this bundle, or in a shared one.
             let Some(mp) = as_pptr(field(&mc, "m_Mesh")) else {
@@ -531,7 +571,7 @@ fn extract_inner(env: &Env, shared: &Shared, files: &[usize], min_ny: f32, tagge
             }
         }
     }
-    st.terrain_tris = terrain_faces(env, shared, files, min_ny, &skip, &mut hier, &mut out, &mut tags);
+    st.terrain_tris = terrain_faces(env, shared, files, min_ny, skip, &mut hier, &mut out, &mut tags);
     let blocks = boundary_boxes(env, files, &mut hier, &mut active);
     Floors { tris: out, walls, blocks, unresolved, stats: st, mats: tags.mats, mat_table: tags.table }
 }
@@ -785,12 +825,13 @@ const LANDMARK_CLASSES: [i32; 7] = [
 ];
 const CLASS_OCCLUSIONAREA: i32 = 192;
 
-pub fn landmarks(env: &Env, files: &[usize]) -> Landmarks {
+
+/// Where the zone's content is, leaving out the [`backdrop`] objects in `skip`.
+pub fn landmarks_with(env: &Env, files: &[usize], skip: &HashSet<(usize, usize)>) -> Landmarks {
     let mut hier = Hierarchy::default();
     let mut lm = Landmarks::default();
     // A neighbour's scenery carries its props too; they mark where the
     // neighbour is, not this zone.
-    let skip = backdrop(env, files);
     for &fi in files {
         let count = env.col.serialized_files()[fi].file.objects.len();
         for oi in 0..count {

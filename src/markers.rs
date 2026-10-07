@@ -77,6 +77,11 @@ pub struct Marker {
     pub src: String,
     #[serde(default)]
     pub added: String,
+    /// In a zone built on top of itself, the floor this marker is on,
+    /// numbered from 1 as the floor maps are (1 = lowest). None means the
+    /// zone as a whole: shown on the top-level map, not on any one floor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub floor: Option<u8>,
 }
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -194,6 +199,7 @@ impl MarkerSet {
             reqs: Reqs::default(),
             src: String::new(),
             added: now_stamp(),
+            floor: None,
         });
         let _ = self.save();
         id

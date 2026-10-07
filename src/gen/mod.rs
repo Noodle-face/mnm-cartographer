@@ -19,6 +19,7 @@ pub mod bounds;
 pub mod paint;
 pub mod materials;
 pub mod throttle;
+pub mod light;
 
 /// Scenes that carry no walkable geometry, or carry geometry that lies about
 /// the zone's size. Audio subscenes are empty; distant/facade/backdrop scenery

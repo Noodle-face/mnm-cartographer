@@ -49,7 +49,7 @@ The whole set is about **150 MB** — roughly 19,000 tiles, WebP inside SQLite,
 one file per zone, plus a map per floor for the twelve zones built on top of
 themselves (see below). The scan finds 45 zones and about 43 produce a map; the
 rest are unbuilt stubs with no walkable geometry. On an 8-core machine the whole
-set takes around five minutes at the default setting.
+set takes two to three minutes at the default setting.
 
 ### CPU, heat and memory
 
@@ -63,7 +63,9 @@ sets how hard:
 | **Balanced** (default) | every core, resting 30% of the time | 4:49 | 85.8 °C |
 | Cool | every core, resting more than half the time | 6:22 | 79.8 °C |
 
-\* All 44 zones on a Ryzen 7 9800X3D with 62 GB of RAM, from a 44 °C idle.
+\* All 44 zones on a Ryzen 7 9800X3D with 62 GB of RAM, from a 44 °C idle,
+measured with 0.0.6. Since 0.0.8 a full build is about 45% faster -- 2:12 at
+Full speed on the same machine -- and the settings compare the same way.
 
 The cooler settings do not lower clock speeds; the cores work at full speed in
 short bursts and rest in between, which keeps the average power, and so the
@@ -151,6 +153,23 @@ map; markers sit in the same place on both. Each surface is painted by what it
 is made of -- sand, rock, grass, dirt, mud, snow, lava, water, wood, built stone
 -- sorted from the names of the game's own materials, with a surface's blend
 layers showing as rock on steep ground and as patches elsewhere.
+
+A painted map comes in two looks, chosen under **Show painted style**:
+
+- **Daylight** -- what everything is made of, as if in full daylight.
+- **Lamplight** -- coloured by the zone's own lamps, torches and glowing
+  growths, as it looks underground or at night: warm streets in Night Harbor,
+  blue caverns and green grottos in Underdocks. Nothing goes dark -- unlit
+  ground keeps about half its brightness under a faint cool cast, and light
+  only adds colour on top. Light that bathes a whole zone evenly is treated as
+  ambient and left out, so the colour comes from lamps, not a wash. Walls do
+  not block it.
+
+Whether a zone is under the sky cannot be read from its files -- every zone
+carries the same directional "sun" and no skybox of its own -- so every
+painted map gets both. A few zones with no lamps of their own (Fallen Crypt,
+the Night Harbor sewers) have Daylight only. Floors of multi-storey zones can
+be painted too, each with only its own lamps.
 
 The readout is in **game world coordinates**. Markers are stored in world space,
 so they stay put across zoom levels.
@@ -403,7 +422,7 @@ Only useful if you are working on the renderer:
 
 A debug build (`cargo run`) also takes `MNM_SHOT=out.png`: it opens, sets up the
 states listed in `MNM_SHOT_STATE` (comma-separated: `help`, `ring`, `overlay`,
-`playing`, `share`, `maps`, `zone=<name>`, `painted`, `zoom=<factor>`, `at=<x>:<z>`, `find=<text>`), saves a screenshot of its own window and
+`playing`, `share`, `maps`, `zone=<name>`, `painted`, `lamp`, `zoom=<factor>`, `at=<x>:<z>`, `find=<text>`), saves a screenshot of its own window and
 exits. For checking the UI without sitting at it.
 
 ## Where maps come from
