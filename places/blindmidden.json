@@ -1,0 +1,49 @@
+{
+ "places": [
+  {
+   "name": "Brick Gang",
+   "x": -151.3,
+   "z": 83.9
+  },
+  {
+   "name": "Ramshackle Buildings",
+   "x": -158.8,
+   "z": -106.4
+  },
+  {
+   "name": "Ramshackle Buildings",
+   "x": -179.8,
+   "z": -11.7
+  },
+  {
+   "name": "Ramshackle Buildings",
+   "x": 163.0,
+   "z": -103.0
+  },
+  {
+   "name": "Undead Burial Area",
+   "x": 300.1,
+   "z": -40.6
+  },
+  {
+   "name": "Slave Sorting Room",
+   "x": -126.1,
+   "z": 96.2
+  },
+  {
+   "name": "Oozelings",
+   "x": 17.6,
+   "z": 125.2
+  },
+  {
+   "name": "Spiders",
+   "x": -195.1,
+   "z": 123.1
+  },
+  {
+   "name": "Wererats",
+   "x": 66.2,
+   "z": -194.5
+  }
+ ]
+}

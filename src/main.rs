@@ -38,6 +38,7 @@ fn seed_assets(dir: &std::path::Path) {
 mod paper;
 mod icons;
 mod markers;
+mod places;
 mod overlay;
 mod pyramid;
 mod update;
@@ -50,6 +51,29 @@ use std::path::{Path, PathBuf};
 
 const PAPER: egui::Color32 = egui::Color32::from_rgb(0xef, 0xe6, 0xcf);
 const INK: egui::Color32 = egui::Color32::from_rgb(0x1d, 0x1a, 0x16);
+
+/// The lettering face for place names: IM FELL English SC (SIL OFL 1.1, see
+/// assets/fonts/OFL.txt), a cut of 17th-century printing type that sits
+/// naturally on the parchment the maps are rendered on.
+const MAP_FONT: &[u8] = include_bytes!("../assets/fonts/IMFellEnglishSC.ttf");
+
+/// Place names on the map: darker than the kind's colour, which also has to
+/// read on the dark side panel.
+const PLACE_INK: egui::Color32 = egui::Color32::from_rgb(0x4e, 0x35, 0x20);
+
+fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert("map".into(), egui::FontData::from_static(MAP_FONT));
+    // Proportional as a fallback for glyphs the face lacks, such as arrows.
+    let mut chain = vec!["map".to_owned()];
+    chain.extend(fonts.families[&egui::FontFamily::Proportional].iter().cloned());
+    fonts.families.insert(egui::FontFamily::Name("map".into()), chain);
+    ctx.set_fonts(fonts);
+}
+
+fn map_font(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name("map".into()))
+}
 
 fn app_dir() -> PathBuf {
     std::env::current_exe()
@@ -208,6 +232,9 @@ struct App {
     /// Marker kinds hidden from the map and list. A zone carrying a community
     /// pack can hold hundreds; without this the map becomes unreadable.
     hidden_kinds: std::collections::HashSet<String>,
+    /// The zone's place names, from the binary. Read-only by design.
+    places: Vec<places::Place>,
+    show_places: bool,
     /// Show markers you placed / markers that came from a pack.
     show_mine: bool,
     show_imported: bool,
@@ -292,6 +319,7 @@ impl App {
             .map(|p| MarkerSet::load(&p.markers_path(&base)))
             .unwrap_or_else(|| MarkerSet::empty(base.join("markers/none.json")));
         let floors = maps.get(cur).map(|p| pyramid::floors_of(&p.path)).unwrap_or_default();
+        let places = maps.get(cur).map(|p| places::for_zone(&p.slug())).unwrap_or_default();
         let floors_painted = floors.iter().map(|f| pyramid::painted_of(&f.path)).collect();
         let floors_lamplit = floors.iter().map(|f| pyramid::lamplight_of(&f.path)).collect();
         let lamplit = maps.get(cur).and_then(|p| pyramid::lamplight_of(&p.path));
@@ -317,6 +345,8 @@ impl App {
             share_input: String::new(),
             share_note: String::new(),
             hidden_kinds: Default::default(),
+            places,
+            show_places: true,
             show_mine: true,
             show_imported: true,
             marker_find: String::new(),
@@ -1283,6 +1313,7 @@ impl App {
             .map_or(0.0, |d| d.to_radians());
         let p = &self.maps[self.cur];
         self.mset = MarkerSet::load(&p.markers_path(&self.base));
+        self.places = places::for_zone(&p.slug());
         self.radial = None;
         self.elsewhere.0.clear();
     }
@@ -1966,6 +1997,9 @@ impl App {
             }
             ui.checkbox(&mut self.follow, "Follow game (tail Player.log)");
             ui.checkbox(&mut self.show_legend, "Legend on map");
+            if !self.places.is_empty() {
+                ui.checkbox(&mut self.show_places, "Place names on map");
+            }
             ui.horizontal(|ui| {
                 let mut on = !self.settings.updates_off;
                 if ui.checkbox(&mut on, "Check for updates on launch").changed() {
@@ -2522,6 +2556,30 @@ impl App {
                     }
                     if pointer.map_or(false, |p| (p - c).length() < icons::RADIUS + 2.0) { hovered = Some(i) }
                 }
+                // Place names last, lettered over the badges as a printed map
+                // would. A name that would collide with one already lettered
+                // is left out until zooming in makes room. Part of the map,
+                // so nothing here reacts to the pointer.
+                if self.show_places {
+                    let floor = self.floor_number();
+                    let mut placed: Vec<egui::Rect> = Vec::new();
+                    for pl in &self.places {
+                        if floor.is_some() && pl.floor != floor { continue }
+                        let c = self.world_to_screen(pl.x, pl.z);
+                        if !vp.expand(200.0).contains(c) { continue }
+                        let ink = painter.layout_no_wrap(pl.name.clone(), map_font(17.0), PLACE_INK);
+                        let rect = egui::Align2::CENTER_CENTER.anchor_size(c, ink.size());
+                        if placed.iter().any(|r| r.intersects(rect.expand(2.0))) { continue }
+                        let halo = painter.layout_no_wrap(pl.name.clone(), map_font(17.0),
+                            PAPER.gamma_multiply(0.85));
+                        for (dx, dy) in [(-1.2, 0.0), (1.2, 0.0), (0.0, -1.2), (0.0, 1.2),
+                                         (-0.9, -0.9), (0.9, -0.9), (-0.9, 0.9), (0.9, 0.9)] {
+                            painter.galley(rect.min + egui::vec2(dx, dy), halo.clone(), PAPER);
+                        }
+                        painter.galley(rect.min, ink, INK);
+                        placed.push(rect);
+                    }
+                }
 
                 // A hovered marker shows its pair, so a teleporter link is
                 // visible without opening anything.
@@ -2876,7 +2934,9 @@ impl App {
     fn legend(&self, ui: &mut egui::Ui, vp: egui::Rect) {
         let mut counts: Vec<(&str, usize)> = Vec::new();
         for k in KINDS {
-            let n = self.mset.items.iter().filter(|m| m.kind == k.key).count();
+            // What is on the map, not what is in the file: a kind hidden by a
+            // filter, or on another floor, has nothing to explain.
+            let n = self.mset.items.iter().filter(|m| m.kind == k.key && self.visible(m)).count();
             if n > 0 { counts.push((k.key, n)) }
         }
         if counts.is_empty() { return }
@@ -3893,6 +3953,9 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "M&M Cartographer",
         opts,
-        Box::new(move |_cc| Ok(Box::new(App::new(base, log)))),
+        Box::new(move |cc| {
+            install_fonts(&cc.egui_ctx);
+            Ok(Box::new(App::new(base, log)))
+        }),
     )
 }

@@ -1,0 +1,99 @@
+{
+ "places": [
+  {
+   "name": "Faelindral",
+   "x": -12.0,
+   "z": 128.0
+  },
+  {
+   "name": "Merchant's Row",
+   "x": -30.3,
+   "z": 123.8
+  },
+  {
+   "name": "Traders Terrace",
+   "x": -20.2,
+   "z": 120.3
+  },
+  {
+   "name": "Ardent Keepers",
+   "x": 18.0,
+   "z": 21.1
+  },
+  {
+   "name": "Lambent Wanderers",
+   "x": -86.7,
+   "z": 137.4
+  },
+  {
+   "name": "Wayguard",
+   "x": 116.8,
+   "z": 140.8
+  },
+  {
+   "name": "Guard Outpost",
+   "x": -245.6,
+   "z": 174.7
+  },
+  {
+   "name": "Outpost",
+   "x": -115.9,
+   "z": -59.3
+  },
+  {
+   "name": "Heartwood Archives",
+   "x": -140.6,
+   "z": 133.2
+  },
+  {
+   "name": "The Balanced Branch",
+   "x": -72.6,
+   "z": 17.7
+  },
+  {
+   "name": "Sentinel's Gaze",
+   "x": 122.8,
+   "z": 157.1
+  },
+  {
+   "name": "Well of Order",
+   "x": -26.8,
+   "z": 163.3
+  },
+  {
+   "name": "Ranger's Rest",
+   "x": 19.1,
+   "z": 24.6
+  },
+  {
+   "name": "Lambent Lantern",
+   "x": -106.2,
+   "z": 112.6
+  },
+  {
+   "name": "Quiet Den",
+   "x": 16.2,
+   "z": -44.4
+  },
+  {
+   "name": "Inn",
+   "x": -70.0,
+   "z": 184.2
+  },
+  {
+   "name": "Bank",
+   "x": -149.9,
+   "z": 150.5
+  },
+  {
+   "name": "Stables",
+   "x": -81.8,
+   "z": 201.9
+  },
+  {
+   "name": "Traveler Goods",
+   "x": -169.0,
+   "z": 211.0
+  }
+ ]
+}

@@ -1,0 +1,134 @@
+{
+ "places": [
+  {
+   "name": "West Night Harbor",
+   "x": 444.5,
+   "z": -958.7
+  },
+  {
+   "name": "Sagesage District",
+   "x": 605.3,
+   "z": -1518.6
+  },
+  {
+   "name": "Harbor District",
+   "x": 223.6,
+   "z": -1177.1
+  },
+  {
+   "name": "Night Market",
+   "x": 426.1,
+   "z": -865.5
+  },
+  {
+   "name": "Western Gate",
+   "x": 432.3,
+   "z": -778.9
+  },
+  {
+   "name": "Northern Gate",
+   "x": 696.0,
+   "z": -1426.6
+  },
+  {
+   "name": "Caravan Gate",
+   "x": 537.8,
+   "z": -778.8
+  },
+  {
+   "name": "Steel Talons Garrison",
+   "x": 310.2,
+   "z": -743.6
+  },
+  {
+   "name": "Steel Talons Naval Yard",
+   "x": 277.5,
+   "z": -881.2
+  },
+  {
+   "name": "Steel Talons Martial Academy",
+   "x": 238.5,
+   "z": -717.1
+  },
+  {
+   "name": "Temple of Relle",
+   "x": 331.2,
+   "z": -802.4
+  },
+  {
+   "name": "Temple of Eltindra",
+   "x": 672.8,
+   "z": -808.0
+  },
+  {
+   "name": "Temple of Haradrel",
+   "x": 172.5,
+   "z": -712.8
+  },
+  {
+   "name": "Temple of Vespyra",
+   "x": 699.0,
+   "z": -1555.7
+  },
+  {
+   "name": "Temple of Tilustra",
+   "x": 699.0,
+   "z": -1590.5
+  },
+  {
+   "name": "Shaded Bloom Inn",
+   "x": 460.4,
+   "z": -838.4
+  },
+  {
+   "name": "Crimson Oasis Inn",
+   "x": 574.7,
+   "z": -1510.2
+  },
+  {
+   "name": "Glimmermoon Hall",
+   "x": 404.6,
+   "z": -837.2
+  },
+  {
+   "name": "Concourse of Souls",
+   "x": 773.0,
+   "z": -1168.0
+  },
+  {
+   "name": "Customs House",
+   "x": 138.1,
+   "z": -1249.1
+  },
+  {
+   "name": "Quartermaster's Office",
+   "x": 299.0,
+   "z": -773.9
+  },
+  {
+   "name": "Inspection Post",
+   "x": 549.5,
+   "z": -791.9
+  },
+  {
+   "name": "Library",
+   "x": 607.2,
+   "z": -1586.0
+  },
+  {
+   "name": "Granary",
+   "x": 598.2,
+   "z": -1362.5
+  },
+  {
+   "name": "Thirsty Glance",
+   "x": 414.9,
+   "z": -851.2
+  },
+  {
+   "name": "The Changing of the Guard",
+   "x": 581.5,
+   "z": -1206.9
+  }
+ ]
+}

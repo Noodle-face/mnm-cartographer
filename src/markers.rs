@@ -10,7 +10,7 @@
 //! simulated deuteranopia. So SHAPE is the primary identity channel and colour
 //! is secondary, with a label always available. Several of these hues also sit
 //! under 3:1 contrast on the cream map, which is why every marker carries a
-//! dark ink ring.
+//! dark ink ring. (Place names are not markers at all; see places.rs.)
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};

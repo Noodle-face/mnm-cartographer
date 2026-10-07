@@ -1,0 +1,34 @@
+{
+ "places": [
+  {
+   "name": "Citadel Exchange",
+   "x": -2598.5,
+   "z": 1965.9
+  },
+  {
+   "name": "The High Note",
+   "x": -2629.0,
+   "z": 1973.8
+  },
+  {
+   "name": "Stoneshiner's Gems",
+   "x": -2571.4,
+   "z": 2027.9
+  },
+  {
+   "name": "Forge's Bounty",
+   "x": -2563.1,
+   "z": 2016.3
+  },
+  {
+   "name": "The Balanced Blade",
+   "x": -2589.1,
+   "z": 2012.8
+  },
+  {
+   "name": "Deltan's Smeltery",
+   "x": -2577.6,
+   "z": 2011.8
+  }
+ ]
+}

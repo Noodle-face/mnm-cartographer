@@ -226,6 +226,15 @@ apart (the best assignment scores a worst-pair OKLab dE of 13.7 against a floor
 of 15, and 3.9 under simulated deuteranopia), so the glyph does the work and
 colour reinforces it.
 
+### Place names
+
+Districts, buildings and landmarks are lettered straight onto the map in an old
+printer's face, over the markers. They are part of the map rather than markers:
+they ship with the app from `places/<zone>.json`, cannot be moved, edited or
+added to, and are not in the legend or in packs. Where two names would overlap,
+one waits until you zoom in far enough to fit it. **Place names on map** turns
+them off.
+
 Markers are plain JSON in `markers/<zone>.json`, in world coordinates — diff
 them, share them, or hand-edit them.
 
@@ -512,4 +521,6 @@ cannot disagree.
 
 Zone connection data from the community
 [Monsters and Memories Wiki](https://monstersandmemories.miraheze.org/).
+Place names are set in IM FELL English SC by Igino Marini, under the SIL Open
+Font License 1.1 (`assets/fonts/OFL.txt`).
 Not affiliated with or endorsed by Niche Worlds Cult.

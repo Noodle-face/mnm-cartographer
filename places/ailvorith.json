@@ -1,0 +1,174 @@
+{
+ "places": [
+  {
+   "name": "Foreign Quarter",
+   "x": -18.4,
+   "z": -241.7
+  },
+  {
+   "name": "Merchant's Row",
+   "x": -35.3,
+   "z": -170.6
+  },
+  {
+   "name": "Palace of the Queen",
+   "x": 283.0,
+   "z": -126.1
+  },
+  {
+   "name": "Arena",
+   "x": 206.6,
+   "z": -234.1
+  },
+  {
+   "name": "Open Market",
+   "x": 366.5,
+   "z": -185.3
+  },
+  {
+   "name": "First Gate",
+   "x": 25.9,
+   "z": -280.4
+  },
+  {
+   "name": "Crafting Hall",
+   "x": -30.8,
+   "z": -178.2
+  },
+  {
+   "name": "Military",
+   "x": -16.2,
+   "z": -259.6
+  },
+  {
+   "name": "Scholars",
+   "x": 7.3,
+   "z": -241.4
+  },
+  {
+   "name": "Stables",
+   "x": 9.2,
+   "z": -173.4
+  },
+  {
+   "name": "Tavern",
+   "x": 39.0,
+   "z": -227.7
+  },
+  {
+   "name": "Bank",
+   "x": -75.8,
+   "z": -218.7
+  },
+  {
+   "name": "Temple",
+   "x": -119.5,
+   "z": -238.6
+  },
+  {
+   "name": "Reception Hall",
+   "x": 307.7,
+   "z": -148.4
+  },
+  {
+   "name": "Council Chambers",
+   "x": 397.1,
+   "z": -74.7
+  },
+  {
+   "name": "The Six-forked Serpent",
+   "x": 326.2,
+   "z": -92.2
+  },
+  {
+   "name": "The Sylph",
+   "x": 362.3,
+   "z": -76.4
+  },
+  {
+   "name": "Port Authority",
+   "x": 332.5,
+   "z": -63.2
+  },
+  {
+   "name": "Interrogation Site",
+   "x": 412.0,
+   "z": -105.2
+  },
+  {
+   "name": "Barracks",
+   "x": 395.8,
+   "z": -146.4
+  },
+  {
+   "name": "Guard House",
+   "x": 360.8,
+   "z": -139.3
+  },
+  {
+   "name": "House of Lies",
+   "x": 330.1,
+   "z": -204.3
+  },
+  {
+   "name": "Bank",
+   "x": 223.0,
+   "z": -228.3
+  },
+  {
+   "name": "Inn",
+   "x": 232.2,
+   "z": -269.0
+  },
+  {
+   "name": "The Shol'tar",
+   "x": 158.6,
+   "z": -264.9
+  },
+  {
+   "name": "Appeals Court",
+   "x": 185.9,
+   "z": -163.9
+  },
+  {
+   "name": "Pilgrim's Inn",
+   "x": 229.6,
+   "z": -134.9
+  },
+  {
+   "name": "Library",
+   "x": 153.4,
+   "z": -85.0
+  },
+  {
+   "name": "Scholar's Tower",
+   "x": 131.8,
+   "z": -92.0
+  },
+  {
+   "name": "Research Wing",
+   "x": 273.4,
+   "z": 54.1
+  },
+  {
+   "name": "Hall of Martyrs",
+   "x": 231.9,
+   "z": -19.6
+  },
+  {
+   "name": "Embassy",
+   "x": 280.8,
+   "z": -16.3
+  },
+  {
+   "name": "Temple",
+   "x": 253.6,
+   "z": -45.5
+  },
+  {
+   "name": "Temple",
+   "x": 365.1,
+   "z": -15.6
+  }
+ ]
+}

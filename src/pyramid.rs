@@ -127,9 +127,13 @@ impl Pyramid {
 
     /// Annotations live in markers/<slug>.json beside the map directory:
     /// tiles are generated and disposable, annotations are authored.
+    /// The zone's file-name key, as markers and place names are stored.
+    pub fn slug(&self) -> String {
+        self.path.file_stem().unwrap_or_default().to_string_lossy().into_owned()
+    }
+
     pub fn markers_path(&self, base: &Path) -> PathBuf {
-        let slug = self.path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-        base.join("markers").join(format!("{slug}.json"))
+        base.join("markers").join(format!("{}.json", self.slug()))
     }
 }
 
