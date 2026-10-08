@@ -3,14 +3,18 @@
 Zone maps for **Monsters & Memories** — pan, zoom, annotate, and follow the game
 between zones automatically.
 
-Runs on Linux and Windows. A single ~8 MB binary — no install, no runtime, no
+Runs on Linux and Windows. A single ~10 MB binary — no install, no runtime, no
 git clone. It **builds the maps itself** from the copy of the game you already
 own, so there is nothing else to download and no map data ships with it.
 
-![The Underdocks harbour at full zoom](docs/underdocks-ink.jpg)
+<p>
+  <img src="docs/underdocks-map.jpg" width="49%" alt="The Underdocks citadel, inked, with place names, starter markers and the legend">
+  <img src="docs/underdocks-lamplight.jpg" width="49%" alt="The same view of Underdocks, painted and lit by its own lamps">
+</p>
 
-*The Underdocks harbour, at the finest zoom level — rendered from the game's own
-mesh colliders, so what you see is what you can stand on.*
+*Underdocks, inked with its place names and starter markers (left), and painted
+in its own lamplight (right) -- both rendered from the game's own mesh
+colliders, so what you see is what you can stand on.*
 
 ---
 
@@ -82,6 +86,10 @@ Zone scenes carry their neighbours' scenery, leftover development copies and
 backdrop terrain; the generator drops those, using the zone's own invisible
 walls where it has them and where you can walk where it does not.
 
+Every map lies on one continuous page: its background is the same paper as the
+area round it, laid in the map's own grain, so the map turns as one sheet and
+shows no edge of its own.
+
 ### Floors
 
 Zones built on top of themselves -- Blind Midden, King Pyrotr's Fortress, the
@@ -152,7 +160,11 @@ half a minute. **Show painted style** then switches between it and the inked
 map; markers sit in the same place on both. Each surface is painted by what it
 is made of -- sand, rock, grass, dirt, mud, snow, lava, water, wood, built stone
 -- sorted from the names of the game's own materials, with a surface's blend
-layers showing as rock on steep ground and as patches elsewhere.
+layers showing as rock on steep ground and as patches elsewhere. It is painted
+as an atlas would be: muted earth tones and soft shorelines, natural edges
+between one ground and the next, shade gathering in low ground, a sepia line
+on walls and cliffs, hand-laid paving and planking, and one colour grade over
+it all.
 
 A painted map comes in two looks, chosen under **Show painted style**:
 
@@ -160,10 +172,11 @@ A painted map comes in two looks, chosen under **Show painted style**:
 - **Lamplight** -- coloured by the zone's own lamps, torches and glowing
   growths, as it looks underground or at night: warm streets in Night Harbor,
   blue caverns and green grottos in Underdocks. Nothing goes dark -- unlit
-  ground keeps about half its brightness under a faint cool cast, and light
-  only adds colour on top. Light that bathes a whole zone evenly is treated as
-  ambient and left out, so the colour comes from lamps, not a wash. Walls do
-  not block it.
+  ground keeps about half its brightness under a cool moonlight, and light
+  adds colour on top: it tints what it falls on rather than painting it, so a
+  cyan crystal glows rather than turning a square neon. Light that bathes a
+  whole zone evenly is treated as ambient and left out, so the colour comes
+  from lamps, not a wash. Walls do not block it.
 
 Whether a zone is under the sky cannot be read from its files -- every zone
 carries the same directional "sun" and no skybox of its own -- so every
@@ -225,6 +238,10 @@ carries identity, not colour: eight categorical colours cannot all be told
 apart (the best assignment scores a worst-pair OKLab dE of 13.7 against a floor
 of 15, and 3.9 under simulated deuteranopia), so the glyph does the work and
 colour reinforces it.
+
+**Legend on map** shows a key in the corner, set like a printed map's: each
+kind of marker on screen, its badge beside its name in its colour. Kinds that
+are filtered out, or on another floor, are left off it.
 
 ### Place names
 
