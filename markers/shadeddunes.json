@@ -1,24 +1,6 @@
 {
  "markers": [
   {
-   "id": "cb9814a7",
-   "x": -563.0,
-   "z": 1690.0,
-   "label": "to FallenPass",
-   "kind": "exit",
-   "note": "Zone line to FallenPass.\nScene object: ZoneLineBlockerFPWater\nPosition from adjacent geometry - approximate.",
-   "added": "2026-10-04 14:17"
-  },
-  {
-   "id": "72d131a8",
-   "x": -322.8,
-   "z": 1729.2,
-   "label": "to FallenPass",
-   "kind": "exit",
-   "note": "Zone line to FallenPass.\nScene object: ZoneLineBlockerFPWater (1)\nPosition from adjacent geometry - approximate.",
-   "added": "2026-10-04 14:17"
-  },
-  {
    "id": "f8a0993e",
    "x": 363.7,
    "z": 1662.6,
@@ -35,6 +17,46 @@
    "kind": "exit",
    "note": "Scene object: PortalDestWizard",
    "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "3e24860c",
+   "x": 208.6,
+   "z": 1144.8,
+   "label": "Wayshrine",
+   "kind": "note",
+   "note": "",
+   "src": "Shaded Dunes starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "8fc3f6ac",
+   "x": 0.0,
+   "z": -45.0,
+   "label": "Bank",
+   "kind": "merchant",
+   "note": "",
+   "src": "Shaded Dunes starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "fcf0480a",
+   "x": 186.0,
+   "z": 1005.4,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Shaded Dunes starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "228bf7e6",
+   "x": -318.7,
+   "z": 743.0,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Shaded Dunes starter pack",
+   "added": "2026-10-07"
   }
  ]
 }

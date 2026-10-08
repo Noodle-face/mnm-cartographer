@@ -8,6 +8,46 @@
    "kind": "exit",
    "note": "Scene object: PortalDestWizard",
    "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "8a6b1848",
+   "x": 270.1,
+   "z": 883.6,
+   "label": "Wayshrine",
+   "kind": "note",
+   "note": "",
+   "src": "Scarwood starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "d2622113",
+   "x": -221.2,
+   "z": 1465.5,
+   "label": "Wayshrine",
+   "kind": "note",
+   "note": "",
+   "src": "Scarwood starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "ca0eb52f",
+   "x": -887.4,
+   "z": 480.0,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Scarwood starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "039d4128",
+   "x": -253.0,
+   "z": -10.5,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Scarwood starter pack",
+   "added": "2026-10-07"
   }
  ]
 }

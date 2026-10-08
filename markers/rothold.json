@@ -17,6 +17,36 @@
    "kind": "danger",
    "note": "Scene object: Lower Crypt False Floor Pit Trap - Floor",
    "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "3c2d0373",
+   "x": 19.0,
+   "z": -59.5,
+   "label": "Oven",
+   "kind": "note",
+   "note": "",
+   "src": "Rothold starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "ef94fa62",
+   "x": -39.7,
+   "z": 140.4,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Rothold starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "088390a6",
+   "x": -197.9,
+   "z": 159.4,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Rothold starter pack",
+   "added": "2026-10-07"
   }
  ]
 }

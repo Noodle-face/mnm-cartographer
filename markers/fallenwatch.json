@@ -17,6 +17,76 @@
    "kind": "exit",
    "note": "Zone line to FallenPass.\nScene object: FallenPassZoneline:SM_SLimePool_01\nPosition from adjacent geometry - approximate.",
    "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "24b9e48b",
+   "x": -112.3,
+   "z": -95.2,
+   "label": "Cave entrance",
+   "kind": "exit",
+   "note": "",
+   "src": "Fallen Watch starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "ed2260f6",
+   "x": -180.5,
+   "z": -26.9,
+   "label": "Tannery",
+   "kind": "note",
+   "note": "",
+   "src": "Fallen Watch starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "54dbadd9",
+   "x": -133.9,
+   "z": 39.9,
+   "label": "Brewery",
+   "kind": "note",
+   "note": "",
+   "src": "Fallen Watch starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "4745353c",
+   "x": -176.0,
+   "z": -63.6,
+   "label": "Forge",
+   "kind": "note",
+   "note": "",
+   "src": "Fallen Watch starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "67a985c7",
+   "x": -167.4,
+   "z": 34.8,
+   "label": "Oven",
+   "kind": "note",
+   "note": "",
+   "src": "Fallen Watch starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "1c2ad37d",
+   "x": -150.1,
+   "z": 42.6,
+   "label": "Tannery",
+   "kind": "note",
+   "note": "",
+   "src": "Fallen Watch starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "d0ac2133",
+   "x": 185.8,
+   "z": -51.0,
+   "label": "Tannery",
+   "kind": "note",
+   "note": "",
+   "src": "Fallen Watch starter pack",
+   "added": "2026-10-07"
   }
  ]
 }

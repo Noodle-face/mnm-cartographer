@@ -1,0 +1,84 @@
+{
+ "markers": [
+  {
+   "id": "03120ee9",
+   "x": 59.0,
+   "z": 31.5,
+   "label": "Bear Cave",
+   "kind": "note",
+   "note": "",
+   "src": "Keeper's Bight starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "64335322",
+   "x": 390.1,
+   "z": 134.1,
+   "label": "Tannery",
+   "kind": "note",
+   "note": "",
+   "src": "Keeper's Bight starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "85e0f236",
+   "x": -706.5,
+   "z": 134.1,
+   "label": "Cave entrance",
+   "kind": "exit",
+   "note": "",
+   "src": "Keeper's Bight starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "30c5857f",
+   "x": 551.6,
+   "z": 102.1,
+   "label": "Sawmill",
+   "kind": "note",
+   "note": "",
+   "src": "Keeper's Bight starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "9df1d6dd",
+   "x": 539.8,
+   "z": -551.2,
+   "label": "Wayshrine",
+   "kind": "note",
+   "note": "",
+   "src": "Keeper's Bight starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "bd3cd0a1",
+   "x": -288.2,
+   "z": 454.1,
+   "label": "Oven",
+   "kind": "note",
+   "note": "",
+   "src": "Keeper's Bight starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "c9e9ea39",
+   "x": -0.2,
+   "z": -660.0,
+   "label": "Oven",
+   "kind": "note",
+   "note": "",
+   "src": "Keeper's Bight starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "bc2379da",
+   "x": 408.8,
+   "z": 672.9,
+   "label": "Oven",
+   "kind": "note",
+   "note": "",
+   "src": "Keeper's Bight starter pack",
+   "added": "2026-10-07"
+  }
+ ]
+}

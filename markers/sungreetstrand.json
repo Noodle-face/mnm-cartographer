@@ -35,6 +35,86 @@
    "kind": "exit",
    "note": "Scene object: NH_TeleportGem (4)",
    "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "fdf64ab5",
+   "x": 3041.7,
+   "z": 757.7,
+   "label": "Glacial Steps Cavern",
+   "kind": "note",
+   "note": "",
+   "src": "Sungreet Strand starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "282217cc",
+   "x": 2924.9,
+   "z": -77.3,
+   "label": "Tannery",
+   "kind": "note",
+   "note": "",
+   "src": "Sungreet Strand starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "ed7a350c",
+   "x": 2309.9,
+   "z": 1063.9,
+   "label": "Forge",
+   "kind": "note",
+   "note": "",
+   "src": "Sungreet Strand starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "f8de001b",
+   "x": 1385.8,
+   "z": -14.5,
+   "label": "Oven",
+   "kind": "note",
+   "note": "",
+   "src": "Sungreet Strand starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "37df908f",
+   "x": 2050.9,
+   "z": -17.9,
+   "label": "Oven",
+   "kind": "note",
+   "note": "",
+   "src": "Sungreet Strand starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "8be1a67f",
+   "x": 1791.4,
+   "z": 50.4,
+   "label": "Oven",
+   "kind": "note",
+   "note": "",
+   "src": "Sungreet Strand starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "691ab0a4",
+   "x": 3118.5,
+   "z": 952.6,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Sungreet Strand starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "479d0952",
+   "x": 2251.5,
+   "z": 892.9,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Sungreet Strand starter pack",
+   "added": "2026-10-07"
   }
  ]
 }

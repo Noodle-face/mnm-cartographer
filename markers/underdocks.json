@@ -1,41 +1,151 @@
 {
-  "markers": [
-    {
-      "id": "3fca7198",
-      "x": -2707.6,
-      "z": 2156.3,
-      "label": "Teleport pad",
-      "kind": "exit",
-      "note": "Scene object: NH_TeleportGem (7)",
-      "added": "2026-10-04 14:17"
-    },
-    {
-      "id": "8d199e0b",
-      "x": -2585.4,
-      "z": 1920.7,
-      "label": "Teleport pad",
-      "kind": "exit",
-      "note": "Scene object: NH_TeleportGem",
-      "added": "2026-10-04 14:17"
-    },
-    {
-      "id": "fad51a54",
-      "x": -2564.4,
-      "z": 1923.1,
-      "label": "Teleport pad",
-      "kind": "exit",
-      "note": "Scene object: NH_TeleportGem (4)",
-      "link": "3fca7198",
-      "added": "2026-10-04 14:17"
-    },
-    {
-      "id": "0032b14d",
-      "x": -2446.0,
-      "z": 1753.1,
-      "label": "Teleport pad",
-      "kind": "exit",
-      "note": "Scene object: NH_TeleportGem (6)",
-      "added": "2026-10-04 14:17"
-    }
-  ]
+ "markers": [
+  {
+   "id": "3fca7198",
+   "x": -2707.6,
+   "z": 2156.3,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: NH_TeleportGem (7)",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "8d199e0b",
+   "x": -2585.4,
+   "z": 1920.7,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: NH_TeleportGem",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "fad51a54",
+   "x": -2564.4,
+   "z": 1923.1,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: NH_TeleportGem (4)",
+   "link": "3fca7198",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "0032b14d",
+   "x": -2446.0,
+   "z": 1753.1,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "Scene object: NH_TeleportGem (6)",
+   "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "af1c46ae",
+   "x": -2520.1,
+   "z": 1946.8,
+   "label": "Tannery",
+   "kind": "note",
+   "note": "",
+   "src": "Underdocks starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "7784c319",
+   "x": -2545.1,
+   "z": 1623.0,
+   "label": "Altar",
+   "kind": "quest",
+   "note": "Altar: likely an item hand-in point.",
+   "src": "Underdocks starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "7ebed836",
+   "x": -2485.3,
+   "z": 1737.8,
+   "label": "Bank",
+   "kind": "merchant",
+   "note": "",
+   "src": "Underdocks starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "f975f4c9",
+   "x": -2406.7,
+   "z": 1831.3,
+   "label": "Bank",
+   "kind": "merchant",
+   "note": "",
+   "src": "Underdocks starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "4805063e",
+   "x": -2654.1,
+   "z": 2177.3,
+   "label": "Cauldron",
+   "kind": "note",
+   "note": "",
+   "src": "Underdocks starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "1bd14db8",
+   "x": -2809.7,
+   "z": 2044.9,
+   "label": "Altar",
+   "kind": "quest",
+   "note": "Altar: likely an item hand-in point.",
+   "src": "Underdocks starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "cc28e57c",
+   "x": -2624.0,
+   "z": 1631.8,
+   "label": "Altar",
+   "kind": "quest",
+   "note": "Altar: likely an item hand-in point.",
+   "src": "Underdocks starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "4e55bc56",
+   "x": -2591.0,
+   "z": 1939.6,
+   "label": "Loom",
+   "kind": "note",
+   "note": "",
+   "src": "Underdocks starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "2b8ec67b",
+   "x": -2573.6,
+   "z": 1964.8,
+   "label": "Oven",
+   "kind": "note",
+   "note": "",
+   "src": "Underdocks starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "f51099ad",
+   "x": -2573.0,
+   "z": 2014.1,
+   "label": "Forge",
+   "kind": "note",
+   "note": "",
+   "src": "Underdocks starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "71ca6c0c",
+   "x": -2352.7,
+   "z": 2369.5,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Underdocks starter pack",
+   "added": "2026-10-07"
+  }
+ ]
 }

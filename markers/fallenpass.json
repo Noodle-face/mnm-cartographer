@@ -17,6 +17,86 @@
    "kind": "exit",
    "note": "Zone line to FallenWatch.\nScene object: SM_FW_FP_ZonelineDoorway\nPosition from adjacent geometry - approximate.",
    "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "ca77948c",
+   "x": 1.1,
+   "z": 185.1,
+   "label": "Sawmill",
+   "kind": "note",
+   "note": "",
+   "src": "Fallen Pass starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "d09852e2",
+   "x": -45.0,
+   "z": 659.8,
+   "label": "Altar",
+   "kind": "quest",
+   "note": "Altar: likely an item hand-in point.",
+   "src": "Fallen Pass starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "1387f41e",
+   "x": -21.0,
+   "z": 63.4,
+   "label": "Loom",
+   "kind": "note",
+   "note": "",
+   "src": "Fallen Pass starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "47d3735e",
+   "x": -61.1,
+   "z": 34.9,
+   "label": "Tannery",
+   "kind": "note",
+   "note": "",
+   "src": "Fallen Pass starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "b0d60eca",
+   "x": -33.0,
+   "z": 59.4,
+   "label": "Forge",
+   "kind": "note",
+   "note": "",
+   "src": "Fallen Pass starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "efd79f3e",
+   "x": -126.4,
+   "z": -437.2,
+   "label": "Tannery",
+   "kind": "note",
+   "note": "",
+   "src": "Fallen Pass starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "29662b37",
+   "x": -257.6,
+   "z": -115.1,
+   "label": "Tannery",
+   "kind": "note",
+   "note": "",
+   "src": "Fallen Pass starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "d9bdc2fb",
+   "x": -82.0,
+   "z": -424.8,
+   "label": "Tannery",
+   "kind": "note",
+   "note": "",
+   "src": "Fallen Pass starter pack",
+   "added": "2026-10-07"
   }
  ]
 }

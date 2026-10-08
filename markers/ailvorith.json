@@ -44,6 +44,96 @@
    "kind": "exit",
    "note": "Scene object: AV_TeleportPad (2)",
    "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "4cd8aaca",
+   "x": 189.8,
+   "z": -12.9,
+   "label": "Forge",
+   "kind": "note",
+   "note": "",
+   "src": "Ail'Vorith starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "b563fbe2",
+   "x": 199.4,
+   "z": 7.5,
+   "label": "Sawmill",
+   "kind": "note",
+   "note": "",
+   "src": "Ail'Vorith starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "ffc95765",
+   "x": 287.7,
+   "z": -223.8,
+   "label": "Loom",
+   "kind": "note",
+   "note": "",
+   "src": "Ail'Vorith starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "68cbf2d1",
+   "x": -147.0,
+   "z": -460.2,
+   "label": "Tannery",
+   "kind": "note",
+   "note": "",
+   "src": "Ail'Vorith starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "2aa813fa",
+   "x": -152.8,
+   "z": -471.2,
+   "label": "Oven",
+   "kind": "note",
+   "note": "",
+   "src": "Ail'Vorith starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "93aaaf66",
+   "x": -101.8,
+   "z": -227.4,
+   "label": "Bank",
+   "kind": "merchant",
+   "note": "",
+   "src": "Ail'Vorith starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "afe549ff",
+   "x": 249.4,
+   "z": -220.0,
+   "label": "Teleport pad",
+   "kind": "exit",
+   "note": "",
+   "src": "Ail'Vorith starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "5ac9dd48",
+   "x": 254.8,
+   "z": -272.1,
+   "label": "Oven",
+   "kind": "note",
+   "note": "",
+   "src": "Ail'Vorith starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "99cb6dbc",
+   "x": 62.9,
+   "z": -85.1,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Ail'Vorith starter pack",
+   "added": "2026-10-07"
   }
  ]
 }

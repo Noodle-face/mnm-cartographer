@@ -1,0 +1,54 @@
+{
+ "markers": [
+  {
+   "id": "94c95ae1",
+   "x": 64.5,
+   "z": -11.5,
+   "label": "Smuggler Cave",
+   "kind": "note",
+   "note": "",
+   "src": "Sewer Crypt starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "17d3e358",
+   "x": 139.2,
+   "z": 56.0,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Sewer Crypt starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "17983e2e",
+   "x": -22.8,
+   "z": -81.6,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Sewer Crypt starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "0f44d24a",
+   "x": -44.0,
+   "z": 134.2,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Sewer Crypt starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "017e61eb",
+   "x": 93.1,
+   "z": 233.6,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Sewer Crypt starter pack",
+   "added": "2026-10-07"
+  }
+ ]
+}

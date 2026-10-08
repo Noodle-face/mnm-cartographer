@@ -1,0 +1,34 @@
+{
+ "markers": [
+  {
+   "id": "11b1fd16",
+   "x": 2.0,
+   "z": -144.3,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Grimtide Sanctum starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "c1924a86",
+   "x": 34.5,
+   "z": -17.4,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Grimtide Sanctum starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "15946076",
+   "x": -153.0,
+   "z": -142.9,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Grimtide Sanctum starter pack",
+   "added": "2026-10-07"
+  }
+ ]
+}

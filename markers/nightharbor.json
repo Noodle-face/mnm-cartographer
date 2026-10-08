@@ -107,6 +107,266 @@
    "kind": "exit",
    "note": "Scene object: NH_TeleportGem (3)",
    "added": "2026-10-04 14:17"
+  },
+  {
+   "id": "a5b558b5",
+   "x": 357.9,
+   "z": -1680.7,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "51e33a87",
+   "x": 434.8,
+   "z": -1458.1,
+   "label": "Teleporter Bottom",
+   "kind": "exit",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "8748108e",
+   "x": 434.0,
+   "z": -1306.8,
+   "label": "Teleporter Top",
+   "kind": "exit",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "3ab0077d",
+   "x": 433.7,
+   "z": -1399.5,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "b769d9dc",
+   "x": 616.2,
+   "z": -926.5,
+   "label": "Tannery",
+   "kind": "note",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "af166df8",
+   "x": 362.0,
+   "z": -925.5,
+   "label": "Blacksmith",
+   "kind": "merchant",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "d4edc2fe",
+   "x": 600.4,
+   "z": -848.9,
+   "label": "Ore: Copper, Iron, Tin",
+   "kind": "harvest",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "f5521389",
+   "x": 519.5,
+   "z": -847.7,
+   "label": "Bank",
+   "kind": "merchant",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "1b29688f",
+   "x": 598.1,
+   "z": -1362.5,
+   "label": "Bank",
+   "kind": "merchant",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "4c6488a4",
+   "x": 599.4,
+   "z": -1621.9,
+   "label": "SS Cultist Cave",
+   "kind": "exit",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "0c49a169",
+   "x": 764.5,
+   "z": -1661.1,
+   "label": "Altar",
+   "kind": "quest",
+   "note": "Altar: likely an item hand-in point.",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "0e40a9cd",
+   "x": 495.1,
+   "z": -1483.0,
+   "label": "Teleport Gem",
+   "kind": "exit",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "1dfe2290",
+   "x": 656.5,
+   "z": -1599.2,
+   "label": "Teleport Gem",
+   "kind": "exit",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "9264890b",
+   "x": 656.5,
+   "z": -1575.4,
+   "label": "Teleport Gem",
+   "kind": "exit",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "fb672477",
+   "x": 256.2,
+   "z": -1202.1,
+   "label": "Elem Cavern",
+   "kind": "exit",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "e976fe26",
+   "x": 139.5,
+   "z": -1452.6,
+   "label": "Oven",
+   "kind": "note",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "05b198bf",
+   "x": 239.0,
+   "z": -1028.7,
+   "label": "Oven",
+   "kind": "note",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "f93476e9",
+   "x": 299.3,
+   "z": -1113.3,
+   "label": "Oven",
+   "kind": "note",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "75ee4948",
+   "x": 282.4,
+   "z": -1386.2,
+   "label": "Oven",
+   "kind": "note",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "829b62e0",
+   "x": 269.6,
+   "z": -1297.7,
+   "label": "Oven",
+   "kind": "note",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "fb2b7f4d",
+   "x": 304.7,
+   "z": -1131.8,
+   "label": "Elem Cavern",
+   "kind": "exit",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "8ce5d728",
+   "x": 280.6,
+   "z": -1166.6,
+   "label": "Elem Cavern",
+   "kind": "exit",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "9646ec6b",
+   "x": 100.5,
+   "z": -1552.4,
+   "label": "Familiars Cave",
+   "kind": "exit",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "28014446",
+   "x": 204.8,
+   "z": -778.0,
+   "label": "Oven",
+   "kind": "note",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "2f3b5963",
+   "x": 190.9,
+   "z": -767.4,
+   "label": "Oven",
+   "kind": "note",
+   "note": "",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "22be378d",
+   "x": 788.5,
+   "z": -926.3,
+   "label": "Altar of Eltindra",
+   "kind": "quest",
+   "note": "Altar: likely an item hand-in point.",
+   "src": "Night Harbor starter pack",
+   "added": "2026-10-07"
   }
  ]
 }

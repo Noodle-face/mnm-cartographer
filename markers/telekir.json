@@ -1,3 +1,94 @@
 {
- "markers": []
+ "markers": [
+  {
+   "id": "c7e9c4e1",
+   "x": 58.5,
+   "z": -7.5,
+   "label": "Cave entrance",
+   "kind": "exit",
+   "note": "",
+   "src": "Tel Ekir starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "3a1d7dce",
+   "x": -11.9,
+   "z": -23.5,
+   "label": "Tannery",
+   "kind": "note",
+   "note": "",
+   "src": "Tel Ekir starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "5fb92daa",
+   "x": 74.5,
+   "z": 1.3,
+   "label": "Tannery",
+   "kind": "note",
+   "note": "",
+   "src": "Tel Ekir starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "fe209f1d",
+   "x": 180.2,
+   "z": -37.5,
+   "label": "Tannery",
+   "kind": "note",
+   "note": "",
+   "src": "Tel Ekir starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "65d9ec00",
+   "x": 144.9,
+   "z": 117.6,
+   "label": "Tannery",
+   "kind": "note",
+   "note": "",
+   "src": "Tel Ekir starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "97150c15",
+   "x": 222.8,
+   "z": -106.6,
+   "label": "Loom",
+   "kind": "note",
+   "note": "",
+   "src": "Tel Ekir starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "d1ece697",
+   "x": 234.9,
+   "z": -75.0,
+   "label": "Oven",
+   "kind": "note",
+   "note": "",
+   "src": "Tel Ekir starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "aafc3aca",
+   "x": 235.1,
+   "z": 27.8,
+   "label": "Oven",
+   "kind": "note",
+   "note": "",
+   "src": "Tel Ekir starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "747e0dfc",
+   "x": 187.2,
+   "z": 52.8,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Tel Ekir starter pack",
+   "added": "2026-10-07"
+  }
+ ]
 }

@@ -1,3 +1,94 @@
 {
- "markers": []
+ "markers": [
+  {
+   "id": "737065d7",
+   "x": -86.4,
+   "z": 13.3,
+   "label": "Fire pit",
+   "kind": "note",
+   "note": "",
+   "src": "Evershade Weald starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "83cfeb0d",
+   "x": 2.0,
+   "z": -36.1,
+   "label": "Fire pit",
+   "kind": "note",
+   "note": "",
+   "src": "Evershade Weald starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "2a8ac864",
+   "x": 63.0,
+   "z": 124.9,
+   "label": "Ore",
+   "kind": "harvest",
+   "note": "",
+   "src": "Evershade Weald starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "7e8cde54",
+   "x": 65.5,
+   "z": 128.3,
+   "label": "Tannery",
+   "kind": "note",
+   "note": "",
+   "src": "Evershade Weald starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "ffa05e67",
+   "x": -78.8,
+   "z": 152.4,
+   "label": "Oven",
+   "kind": "note",
+   "note": "",
+   "src": "Evershade Weald starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "bf85772c",
+   "x": 61.0,
+   "z": -134.2,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Evershade Weald starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "3c3f498b",
+   "x": -379.1,
+   "z": 476.7,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Evershade Weald starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "a96b9ae9",
+   "x": 79.4,
+   "z": -431.7,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Evershade Weald starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "1697ec47",
+   "x": -10.5,
+   "z": 248.8,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Evershade Weald starter pack",
+   "added": "2026-10-07"
+  }
+ ]
 }

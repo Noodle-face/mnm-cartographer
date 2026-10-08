@@ -1,0 +1,104 @@
+{
+ "markers": [
+  {
+   "id": "e08961df",
+   "x": 2188.3,
+   "z": 2340.6,
+   "label": "Copper mine",
+   "kind": "exit",
+   "note": "",
+   "src": "Vale of Zintar starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "4e9364da",
+   "x": 2211.4,
+   "z": 2297.1,
+   "label": "Forge",
+   "kind": "note",
+   "note": "",
+   "src": "Vale of Zintar starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "8d595024",
+   "x": 2831.2,
+   "z": 2321.6,
+   "label": "Tannery",
+   "kind": "note",
+   "note": "",
+   "src": "Vale of Zintar starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "adbda0af",
+   "x": 2618.2,
+   "z": 2357.4,
+   "label": "Tannery",
+   "kind": "note",
+   "note": "",
+   "src": "Vale of Zintar starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "aca449e8",
+   "x": 4204.9,
+   "z": 1541.2,
+   "label": "Tannery",
+   "kind": "note",
+   "note": "",
+   "src": "Vale of Zintar starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "fc7ca9e6",
+   "x": 4216.7,
+   "z": 1587.2,
+   "label": "Forge",
+   "kind": "note",
+   "note": "",
+   "src": "Vale of Zintar starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "c08b789d",
+   "x": 4240.9,
+   "z": 1581.0,
+   "label": "Forge",
+   "kind": "note",
+   "note": "",
+   "src": "Vale of Zintar starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "5be28ae5",
+   "x": 4384.5,
+   "z": 1376.6,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Vale of Zintar starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "6cb95a6f",
+   "x": 1924.2,
+   "z": 1007.5,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Vale of Zintar starter pack",
+   "added": "2026-10-07"
+  },
+  {
+   "id": "3d7542be",
+   "x": 2666.0,
+   "z": 2224.2,
+   "label": "Fishing water",
+   "kind": "harvest",
+   "note": "",
+   "src": "Vale of Zintar starter pack",
+   "added": "2026-10-07"
+  }
+ ]
+}
