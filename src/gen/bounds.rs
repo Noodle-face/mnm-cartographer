@@ -73,18 +73,16 @@ impl Region {
          self.z0 + z0 as f64 * self.cell, self.z0 + (z1 + 1) as f64 * self.cell)
     }
     /// Grow the region by `r` cells in every direction.
+    ///
+    /// By true distance, so the margin is rounded. Grown a ring of
+    /// four-neighbours at a time it was a diamond, whose sides are long
+    /// straight 45-degree lines -- and everything beyond them is dropped, so
+    /// they cut lakes and streets off along a ruler.
     fn dilate(&mut self, r: usize) {
-        let (w, h) = (self.w, self.h);
-        for _ in 0..r {
-            let src = self.inside.clone();
-            for z in 0..h {
-                for x in 0..w {
-                    if src[z * w + x] { continue }
-                    let hit = (z > 0 && src[(z - 1) * w + x]) || (z + 1 < h && src[(z + 1) * w + x])
-                        || (x > 0 && src[z * w + x - 1]) || (x + 1 < w && src[z * w + x + 1]);
-                    if hit { self.inside[z * w + x] = true }
-                }
-            }
+        let m = super::grid::Mask { w: self.w, h: self.h, v: self.inside.clone() };
+        let d = super::grid::edt(&m).0;
+        for (i, &t) in d.v.iter().enumerate() {
+            if t <= r as f32 { self.inside[i] = true }
         }
     }
 }
@@ -108,6 +106,9 @@ pub fn play_region(tris: &[Tri], walls: &[Tri], blocks: &[[f64; 6]], lm: &Landma
         // Some zones carry a stock box far larger than the zone, or one that
         // misses it; use it only when it actually narrows things.
         if c.1 - c.0 > 50.0 && c.3 - c.2 > 50.0 && (c.1 - c.0) * (c.3 - c.2) < 0.97 * (b.1 - b.0) * (b.3 - b.2) {
+            if std::env::var("MNM_BOUNDS_DEBUG").is_ok() {
+                eprintln!("bounds: occlusion areas clip the region from {b:?} to {c:?}");
+            }
             for i in 0..r.inside.len() {
                 let (x, z) = (r.x0 + ((i % r.w) as f64 + 0.5) * r.cell, r.z0 + ((i / r.w) as f64 + 0.5) * r.cell);
                 if x < c.0 || x > c.1 || z < c.2 || z > c.3 { r.inside[i] = false }

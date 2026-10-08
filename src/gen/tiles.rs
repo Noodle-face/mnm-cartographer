@@ -87,6 +87,9 @@ pub struct ZoneInput<'a> {
     pub tags: Option<(&'a [u16], &'a [super::materials::MatClass])>,
     /// The zone's lights: a painted map also gets a Lamplight version.
     pub lights: Option<&'a [super::light::Light]>,
+    /// Geometry cut away at the edge of the play area (see
+    /// [`LoadedZone::cut`]); the map fades out toward it.
+    pub cut: &'a [Tri],
 }
 
 /// Build a zone's map, and a map per floor if it has floors (see
@@ -138,7 +141,8 @@ pub fn build_zone(
         if tris.is_empty() || s.skip_floors.contains(&(i + 1)) { continue }
         jobs.push((
             dir.join(super::floors::file_name(i)),
-            ZoneInput { name: z.name, tris, sea: z.sea, props: &no_props, bbox: z.bbox, tags: None, lights: None },
+            ZoneInput { name: z.name, tris, sea: z.sea, props: &no_props, bbox: z.bbox, tags: None, lights: None,
+                        cut: &[] },
             Style::Floor(i, f.name),
         ));
     }
@@ -208,6 +212,36 @@ pub fn build_painted(
 ) -> Result<(usize, u64)> {
     let s = Settings { zooms, ..Settings::default() };
     build(out, z, frame, if floor { Style::PaintedFloor } else { Style::Painted }, &s, on_level)
+}
+
+/// How far a map fades out toward where the play area cut it off.
+const CUT_FADE: f64 = 25.0;
+
+/// Fade a finished sheet (north-up) into the page toward geometry cut away
+/// at the play area's edge. A real edge -- a coast, a cavern wall -- ends
+/// where the zone does and stays crisp; a cut runs through floor that goes
+/// on, and stopping there drew a ruled line through lakes and streets. The
+/// page is made exactly as the renderers make theirs, so the fade meets it
+/// without a seam.
+pub fn fade_cut(img: &mut super::ink::Rgb, kept: &super::grid::Grid, cut: &[Tri], ppu: f64, bbox: raster::Bbox) {
+    let (w, h) = (kept.w, kept.h);
+    let gone = raster::rasterize(cut, ppu, bbox);
+    let m = super::grid::Mask { w, h, v: (0..w * h).map(|i| gone.v[i].is_finite() && !kept.v[i].is_finite()).collect() };
+    if !m.v.iter().any(|&b| b) { return }
+    let d = super::grid::edt(&m).0;
+    let reach = (CUT_FADE * ppu).max(2.0) as f32;
+    let grain = super::grid::normalize(&super::grid::gaussian(&super::grid::noise(w, h, 5), 0.8));
+    for r in 0..h {
+        for c in 0..w {
+            let i = r * w + c;
+            let t = (1.0 - d.v[i] / reach).clamp(0.0, 1.0);
+            if t <= 0.0 { continue }
+            let a = t * t * (3.0 - 2.0 * t);
+            let page = crate::paper::PAGE.map(|v| v / 255.0 * (1.0 + crate::paper::GRAIN * grain.v[i]));
+            let p = &mut img.v[(h - 1 - r) * w + c];
+            for k in 0..3 { p[k] += (page[k] - p[k]) * a }
+        }
+    }
 }
 
 /// Build one pyramid into `frame` (world bbox, coarsest pixels per unit).
@@ -283,8 +317,14 @@ fn build(
                 (img, None)
             }
         };
+        // Where the play area cut the zone off, fade out rather than stop.
+        let (mut img, mut lit) = img;
+        if !z.cut.is_empty() && !matches!(style, Style::Floor(..) | Style::PaintedFloor) {
+            fade_cut(&mut img, &height, z.cut, ppu, bbox);
+            if let Some(l) = lit.as_mut() { fade_cut(l, &height, z.cut, ppu, bbox) }
+        }
         drop(height);
-        let (img, lit) = img;
+        let (img, lit) = (img, lit);
 
         let (w, h) = (img.w, img.h);
         let _te = super::Timer::start("tile encode");
@@ -442,6 +482,10 @@ pub struct LoadedZone {
     pub mat_table: Vec<super::materials::MatClass>,
     /// Its lamps, torches and glows; see [`super::light`].
     pub lights: Vec<super::light::Light>,
+    /// Geometry dropped for lying outside the play area. Where it was, the
+    /// map was cut off rather than ending, so it fades out there instead of
+    /// stopping at a hard edge; see [`fade_cut`].
+    pub cut: Vec<Tri>,
 }
 
 pub fn load_zone(env: &super::bundle::Env, shared: &super::bundle::Shared,
@@ -477,7 +521,7 @@ pub fn load_zone_with(env: &super::bundle::Env, shared: &super::bundle::Shared,
         .map(|(k, v)| (k.clone(), scene::thin(v, 55.0)))
         .collect();
     if floors.tris.is_empty() {
-        return LoadedZone { tris: floors.tris, sea, props, bbox: (0.0, 0.0, 0.0, 0.0), bounds: "all",
+        return LoadedZone { tris: floors.tris, sea, props, bbox: (0.0, 0.0, 0.0, 0.0), bounds: "all", cut: Vec::new(),
                             all_props, prop_points, mats: Vec::new(), mat_table: Vec::new(),
                             lights: Vec::new() };
     }
@@ -496,17 +540,25 @@ pub fn load_zone_with(env: &super::bundle::Env, shared: &super::bundle::Shared,
     keep(&mut tris, &mut mats, k);
     let full = raster::auto_bbox(&tris);
     let region = { let _t = super::Timer::start("  play region"); super::bounds::play_region(&tris, &floors.walls, &floors.blocks, &lm, sea, full) };
+    let mut cut = Vec::new();
     let (bbox, bounds) = match region {
         Some(r) => {
             let b = r.bbox();
             let k = super::bounds::region_keep(&tris, &r);
+            cut = tris.iter().zip(&k).filter(|(_, &kept)| !kept).map(|(t, _)| *t).collect();
             keep(&mut tris, &mut mats, k);
             // The frame is the region, but never wider than the geometry.
-            ((b.0.max(full.0), b.1.min(full.1), b.2.max(full.2), b.3.min(full.3)), r.method)
+            let f = (b.0.max(full.0), b.1.min(full.1), b.2.max(full.2), b.3.min(full.3));
+            if std::env::var("MNM_BOUNDS_DEBUG").is_ok() {
+                let k = raster::auto_bbox(&tris);
+                eprintln!("bounds: frame {f:?}; kept geometry {k:?}; beyond frame by x-{:.0} x+{:.0} z-{:.0} z+{:.0}",
+                          f.0 - k.0, k.1 - f.1, f.2 - k.2, k.3 - f.3);
+            }
+            (f, r.method)
         }
         None => (full, "all"),
     };
     let lights = if tagged { let _t = super::Timer::start("  lights"); super::light::scene_lights(env, &files) } else { Vec::new() };
     LoadedZone { tris, sea, props, bbox, bounds, all_props, prop_points, mats, mat_table: floors.mat_table,
-                 lights }
+                 lights, cut }
 }
