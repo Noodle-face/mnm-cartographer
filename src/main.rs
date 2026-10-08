@@ -3011,32 +3011,50 @@ impl App {
         }
     }
 
+    /// A map's legend: each kind of marker on screen, its badge beside its
+    /// name in its colour, in the map's own lettering -- set like the key of
+    /// a printed map, not a tally.
     fn legend(&self, ui: &mut egui::Ui, vp: egui::Rect) {
-        let mut counts: Vec<(&str, usize)> = Vec::new();
-        for k in KINDS {
-            // What is on the map, not what is in the file: a kind hidden by a
-            // filter, or on another floor, has nothing to explain.
-            let n = self.mset.items.iter().filter(|m| m.kind == k.key && self.visible(m)).count();
-            if n > 0 { counts.push((k.key, n)) }
-        }
-        if counts.is_empty() { return }
-        let row = 20.0;
-        let h = row * (counts.len() as f32 + 1.0) + 16.0;
-        let rect = egui::Rect::from_min_size(
-            egui::pos2(vp.left() + 14.0, vp.bottom() - h - 14.0),
-            egui::vec2(132.0, h),
-        );
+        // What is on the map, not what is in the file: a kind hidden by a
+        // filter, or on another floor, has nothing to explain.
+        let shown: Vec<&markers::KindInfo> = KINDS.iter()
+            .filter(|k| self.mset.items.iter().any(|m| m.kind == k.key && self.visible(m)))
+            .collect();
+        if shown.is_empty() { return }
         let p = ui.painter();
-        p.rect(rect, 5.0, PAPER.gamma_multiply(0.95),
-            egui::Stroke::new(2.0_f32, INK));
-        p.text(rect.left_top() + egui::vec2(10.0, 8.0), egui::Align2::LEFT_TOP,
-            "Legend", egui::FontId::proportional(12.0), INK);
-        for (i, (k, n)) in counts.iter().enumerate() {
-            let cy = rect.top() + 10.0 + row * (i as f32 + 1.0) + 6.0;
-            let ki = kind(k);
-            icons::draw(p, ki.key, ki.color, egui::pos2(rect.left() + 22.0, cy), 8.5);
-            p.text(egui::pos2(rect.left() + 40.0, cy), egui::Align2::LEFT_CENTER,
-                format!("{}  {n}", ki.label), egui::FontId::proportional(11.0), INK);
+        // The kind's own colour, deepened a little: the paler ones (the
+        // quest amber) are made to sit on a dark badge ring, not on paper.
+        let deepen = |c: egui::Color32| egui::Color32::from_rgb(
+            (c.r() as f32 * 0.8) as u8, (c.g() as f32 * 0.8) as u8, (c.b() as f32 * 0.8) as u8);
+        let title = p.layout_no_wrap("Legend".into(), map_font(19.0), PLACE_INK);
+        let labels: Vec<_> = shown.iter()
+            .map(|k| p.layout_no_wrap(k.label.into(), map_font(16.0), deepen(k.color)))
+            .collect();
+        let (pad, badge, gap, row) = (14.0, 8.0, 10.0, 24.0);
+        let widest = labels.iter().map(|g| g.size().x).fold(0.0f32, f32::max);
+        let w = (pad * 2.0 + badge * 2.0 + gap + widest).max(title.size().x + pad * 2.0);
+        let head = 34.0;
+        let h = head + row * shown.len() as f32 + pad - 4.0;
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(vp.left() + 14.0, vp.bottom() - h - 14.0), egui::vec2(w, h));
+        // A double rule, as a printed key is boxed.
+        p.rect(rect, 2.0, PAPER.gamma_multiply(0.96), egui::Stroke::new(1.6_f32, INK));
+        p.rect_stroke(rect.shrink(3.5), 1.0, egui::Stroke::new(0.7_f32, INK.gamma_multiply(0.7)));
+        // Glyphs centred by their ink, not their line box: small capitals
+        // have no descenders, and centring the box sat them high.
+        let place = |g: &std::sync::Arc<egui::Galley>, x: f32, cy: f32| {
+            egui::pos2(x, cy - g.mesh_bounds.center().y)
+        };
+        let ty = rect.top() + 17.0;
+        p.galley(place(&title, rect.center().x - title.size().x / 2.0, ty), title.clone(), PLACE_INK);
+        let rule = rect.width() * 0.28;
+        p.line_segment([egui::pos2(rect.center().x - rule, ty + 12.0), egui::pos2(rect.center().x + rule, ty + 12.0)],
+                       egui::Stroke::new(0.8_f32, INK.gamma_multiply(0.6)));
+        for (i, (k, g)) in shown.iter().zip(&labels).enumerate() {
+            let cy = rect.top() + head + row * (i as f32 + 0.5);
+            let bx = rect.left() + pad + badge;
+            icons::draw(p, k.key, k.color, egui::pos2(bx, cy), badge);
+            p.galley(place(g, bx + badge + gap, cy), g.clone(), deepen(k.color));
         }
     }
 
