@@ -2408,9 +2408,9 @@ impl App {
                     ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
                 let vp = resp.rect;
 
-                // Parchment behind everything. Tiled in SCREEN space at 1:1 and
-                // scrolled with the pan, so it slides like one big sheet under
-                // the map rather than scaling with zoom.
+                // The page behind everything: see paper.rs. With a map open it
+                // is laid in the map's own pixel grid, under the tiles below;
+                // with none, plainly across the window.
                 let tex = self.paper.get_or_insert_with(|| {
                     let img = egui::ColorImage::from_rgba_unmultiplied(
                         [paper::SIZE, paper::SIZE], &paper::texture());
@@ -2421,15 +2421,12 @@ impl App {
                         mipmap_mode: None,
                     })
                 }).clone();
-                let s = paper::SIZE as f32;
-                let o = egui::vec2(-self.offset.x / s, -self.offset.y / s);
-                painter.image(
-                    tex.id(), vp,
-                    egui::Rect::from_min_size(o.to_pos2(),
-                        egui::vec2(vp.width() / s, vp.height() / s)),
-                    tint,
-                );
                 if self.maps.is_empty() {
+                    let s = paper::SIZE as f32;
+                    painter.image(tex.id(), vp,
+                        egui::Rect::from_min_size(egui::Pos2::ZERO,
+                            egui::vec2(vp.width() / s, vp.height() / s)),
+                        tint);
                     // No maps: offer to build them from the user's own install
                     // rather than pointing at a download that may not exist.
                     let panel = egui::Rect::from_center_size(
@@ -2530,6 +2527,29 @@ impl App {
                             self.clamp(vp);
                         }
                     }
+                }
+
+                // ---- the page -----------------------------------------------
+                // The map's background continued past its edge: page grain in
+                // the map's pixel grid -- anchored at its top-left, turned with
+                // it, one texel per pixel of the level on screen -- so its edge
+                // vanishes and it turns as one sheet, not a card on another.
+                {
+                    let p = self.view_pyr().unwrap();
+                    let ppu = p.level_for(self.scale as f64).ppu;
+                    let (ax, bz) = (p.extent[0], p.extent[3]);
+                    let s = paper::SIZE as f64;
+                    let mut mesh = egui::Mesh::with_texture(tex.id());
+                    for c in [vp.left_top(), vp.right_top(), vp.right_bottom(), vp.left_bottom()] {
+                        let (wx, wz) = self.screen_to_world(c);
+                        mesh.vertices.push(egui::epaint::Vertex {
+                            pos: c,
+                            uv: egui::pos2(((wx - ax) * ppu / s) as f32, ((bz - wz) * ppu / s) as f32),
+                            color: tint,
+                        });
+                    }
+                    mesh.indices.extend([0, 1, 2, 0, 2, 3]);
+                    painter.add(mesh);
                 }
 
                 // ---- tiles -------------------------------------------------

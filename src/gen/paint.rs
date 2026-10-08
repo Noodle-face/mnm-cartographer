@@ -272,6 +272,10 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
     // the top of Shaded Dunes, where the land runs on into Fallen Pass.
     let water = Mask { w, h, v: (0..n).map(|i| !land.v[i] && !void.v[i]).collect() };
     let beyond = blur(&as_grid(&void), px(4.0).max(1.0));
+    // Off the map is the page the ink maps are drawn on, made the same way --
+    // page colour, one speck of grain per pixel -- so the viewer can carry
+    // it on past the map's edge without a seam (see paper.rs).
+    let page_grain = super::grid::normalize(&super::grid::gaussian(&super::grid::noise(w, h, 5), 0.8));
 
     // ---- roofs -----------------------------------------------------------
     // A built surface standing more than a storey over the ground it covers
@@ -605,10 +609,10 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
             let ring = 5.0 + 2.5 * fbm(x, z, 30.0, 13);
             if water.v[i] { c = mix(c, foam2_c, 0.22 * (1.0 - (dw - ring).abs() / 0.9).clamp(0.0, 1.0)) }
         }
-        // Off the map: the parchment the map is painted on.
+        // Off the map: the page.
         if beyond.v[i] > 0.0 {
-            let g = 1.0 + 0.04 * fbm(x, z, 40.0, 14);
-            c = mix(c, scale(rgb(226, 212, 182), g), beyond.v[i]);
+            let page = crate::paper::PAGE.map(|v| v * (1.0 + crate::paper::GRAIN * page_grain.v[i]));
+            c = mix(c, page, beyond.v[i]);
         }
         [c[0] / 255.0, c[1] / 255.0, c[2] / 255.0]
     }).collect();
@@ -625,7 +629,9 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
     img = out;
     let mut rgbimg = Rgb { w, h, v: img };
     draw_props(&mut rgbimg, props, &land, o);
-    grade(&mut rgbimg);
+    // The page is left as made, so it meets the viewer's page exactly.
+    let page_w: Vec<f32> = (0..n).map(|j| beyond.v[(h - 1 - j / w) * w + j % w]).collect();
+    grade(&mut rgbimg, &page_w);
     rgbimg
 }
 
@@ -676,12 +682,13 @@ fn finish(img: &mut [[f32; 3]], hf: &Grid, land: &Mask, void: &Mask, hard: &Mask
 /// The final colour grade, over everything including props: a little less
 /// saturation, warmer light, and shadows lifted off black, so the whole
 /// picture shares one light.
-fn grade(img: &mut Rgb) {
-    img.v.par_iter_mut().for_each(|c| {
+fn grade(img: &mut Rgb, page: &[f32]) {
+    img.v.par_iter_mut().zip(page).for_each(|(c, &pg)| {
         let l = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
         let mut o = [0, 1, 2].map(|k| l + (c[k] - l) * 0.86);
         o = [o[0] * 1.015, o[1] * 1.0, o[2] * 0.965];
-        *c = o.map(|v| (0.045 + 0.94 * v).clamp(0.0, 1.0));
+        let graded = o.map(|v| (0.045 + 0.94 * v).clamp(0.0, 1.0));
+        *c = mix(graded, *c, pg);
     });
 }
 
