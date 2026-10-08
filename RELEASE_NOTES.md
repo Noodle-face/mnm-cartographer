@@ -1,31 +1,16 @@
 ## What's new
 
-- **Place names** -- districts, buildings and landmarks are lettered onto the
-  maps in an old printer's face: Night Harbor's gates, temples and inns,
-  Ail'Vorith's palace and arena, Faelindral's terraces and more, across eight
-  zones. They are part of the map, not markers; **Place names on map** hides
-  them.
-- **Starter markers for most zones** -- crafting stations, banks, altars, ore
-  and fishing spots, teleporters and cave entrances, taken from the game's own
-  files and checked against each zone's real ground. Each zone's set arrives
-  once as its *starter pack*; untick **imported** to hide them, and any you
-  delete stay deleted.
-- **One continuous page** -- the map no longer sits on a different sheet of
-  paper: its background runs on past its edge and turns with it, so there is
-  no visible square when you rotate.
-- **Maps fade out where they are cut off** instead of stopping at a ruled
-  line -- Underdocks' lake and tunnels, for one.
-- **The painted style is repainted like an atlas**: softer earth tones, gentle
-  shorelines, natural edges between grass, dirt and sand, ink on walls and
-  cliffs, hand-laid paving, arching palms, canvas awnings.
-- **Lamplight by moonlight** -- unlit ground is cool and moonlit rather than
-  muddy, and coloured lights glow rather than paint.
-- The legend lists only the markers actually shown.
-- Removed three zone lines that sat far off their maps.
+- **A proper map legend** -- the key in the corner is now set like a printed
+  map's: each kind of marker on screen, its badge beside its name in its own
+  colour, under a ruled title. No more counts.
+- **Fixed: parts of some maps were faded away.** 0.0.9 faded maps out toward
+  their trimmed edges, and where trimmed scenery lay close to the real zone
+  it washed out real ground with it -- Underdocks lost its docks and the
+  water channels beside them. The fade is gone; every map shows everything it
+  did before 0.0.9, and a little more at the edges.
 
-The new paint style and the softened edges appear once a map is rebuilt:
-open **Maps...** and press **Rebuild maps**, and **Repaint this map** for
-painted ones.
+If you rebuilt maps with 0.0.9, open **Maps...** and press **Rebuild maps**,
+and **Repaint this map** for painted ones, to get the missing parts back.
 
 ## Install
 
