@@ -289,6 +289,8 @@ altars, ore and fishing spots, teleporters and cave entrances. Each is
 imported once, the first time you launch a version that has it, and skips
 anything you have already marked nearby. It is never imported again, so a
 starter marker you delete stays deleted; untick **imported** to hide them all.
+A starter marker withdrawn in a later release is removed from your map too,
+unless you have moved it -- then it is yours.
 
 ### Sharing markers
 

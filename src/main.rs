@@ -18,6 +18,30 @@ mod seed {
     pub static CONNECTIONS: &str = include_str!("../connections.json");
 }
 
+/// Starter markers withdrawn in a later release, as (zone file, id, x, z):
+/// zone lines that sat far off their maps. Seeding never deletes, so without
+/// this they would stay on every map that had them.
+const RETIRED_MARKERS: &[(&str, &str, f64, f64)] = &[
+    ("twilightisles.json", "f1237abc", -1428.0, -246.8),
+    ("shadeddunes.json", "cb9814a7", -563.0, 1690.0),
+    ("shadeddunes.json", "72d131a8", -322.8, 1729.2),
+];
+
+/// Remove retired starter markers from the user's maps. Only the marker with
+/// that id, and only where it still stands where it was shipped: one the
+/// user moved has been fixed by them and is theirs now. Removing what is
+/// already gone does nothing, so this needs no record of having run.
+fn remove_retired_markers(dir: &std::path::Path) {
+    for (name, id, x, z) in RETIRED_MARKERS {
+        let path = dir.join("markers").join(name);
+        if !path.exists() { continue }
+        let mut set = MarkerSet::load(&path);
+        let before = set.items.len();
+        set.items.retain(|m| !(m.id == *id && (m.x - x).hypot(m.z - z) < 0.5));
+        if set.items.len() != before { let _ = set.save(); }
+    }
+}
+
 /// Import each built-in starter pack the user has not had yet, once.
 ///
 /// Seeding writes a zone's whole file only when the user has none, so
@@ -4033,7 +4057,10 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
     // Only into a directory we chose, as for seeding.
-    if explicit_base.is_none() { import_starter_packs(&base) }
+    if explicit_base.is_none() {
+        import_starter_packs(&base);
+        remove_retired_markers(&base);
+    }
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 860.0])
