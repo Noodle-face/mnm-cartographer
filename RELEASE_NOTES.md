@@ -1,25 +1,31 @@
 ## What's new
 
-- **Lamplight** -- painted maps can now be shown lit by the zone's own lamps,
-  torches and glows: warm streets in Night Harbor, blue caverns and green
-  grottos in Underdocks. Choose **Daylight** or **Lamplight** under *Show
-  painted style*. Everything stays visible; the light colours the map, it does
-  not hide it.
-- **Buildings look like buildings** in the painted style: roofs in the game's
-  own colours, shaded by their pitch, with eaves and shadows on the street.
-  Night Harbor's palace dome is back -- it had been painted as dirt.
-- **Forests** -- trees are drawn from the game's own tree objects.
-- **Paint floors** -- each floor of a multi-storey zone can be painted.
-- **Markers stay on their floor** -- a marker placed on a floor shows only
-  there; set a marker's floor in its dialog.
-- **Much faster map building** -- building every map takes about half as
-  long as before (4:04 down to 2:12 at full speed on a 9800X3D), and painting
-  Night Harbor 22 seconds instead of 55. The maps come out exactly the same.
-- Fixed: props under a rotated group (all of Fallen Watch) were drawn in the
-  wrong place, and some bones were being drawn as pine trees.
+- **Place names** -- districts, buildings and landmarks are lettered onto the
+  maps in an old printer's face: Night Harbor's gates, temples and inns,
+  Ail'Vorith's palace and arena, Faelindral's terraces and more, across eight
+  zones. They are part of the map, not markers; **Place names on map** hides
+  them.
+- **Starter markers for most zones** -- crafting stations, banks, altars, ore
+  and fishing spots, teleporters and cave entrances, taken from the game's own
+  files and checked against each zone's real ground. Each zone's set arrives
+  once as its *starter pack*; untick **imported** to hide them, and any you
+  delete stay deleted.
+- **One continuous page** -- the map no longer sits on a different sheet of
+  paper: its background runs on past its edge and turns with it, so there is
+  no visible square when you rotate.
+- **Maps fade out where they are cut off** instead of stopping at a ruled
+  line -- Underdocks' lake and tunnels, for one.
+- **The painted style is repainted like an atlas**: softer earth tones, gentle
+  shorelines, natural edges between grass, dirt and sand, ink on walls and
+  cliffs, hand-laid paving, arching palms, canvas awnings.
+- **Lamplight by moonlight** -- unlit ground is cool and moonlit rather than
+  muddy, and coloured lights glow rather than paint.
+- The legend lists only the markers actually shown.
+- Removed three zone lines that sat far off their maps.
 
-Painted maps from earlier versions keep their old look until you press
-**Repaint this map**.
+The new paint style and the softened edges appear once a map is rebuilt:
+open **Maps...** and press **Rebuild maps**, and **Repaint this map** for
+painted ones.
 
 ## Install
 
