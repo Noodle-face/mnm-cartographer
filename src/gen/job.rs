@@ -400,6 +400,11 @@ pub struct Settings {
     /// ones were cleared on upgrade.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub north_is_x: bool,
+    /// Built-in starter packs already imported, by pack name. Each is
+    /// imported once and never again, so a marker deleted from one stays
+    /// deleted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub starter_packs: Vec<String>,
 }
 
 impl Settings {

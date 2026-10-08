@@ -18,6 +18,42 @@ mod seed {
     pub static CONNECTIONS: &str = include_str!("../connections.json");
 }
 
+/// Import each built-in starter pack the user has not had yet, once.
+///
+/// Seeding writes a zone's whole file only when the user has none, so
+/// starter markers added in a later release would never reach anyone who
+/// already used that zone. Instead each pack -- the seed markers tagged
+/// "<Zone> starter pack" -- is merged in as Import merges a pack: anything
+/// already marked nearby is skipped, so nothing doubles up. Recorded in the
+/// settings, it is never imported again.
+fn import_starter_packs(dir: &std::path::Path) {
+    #[derive(serde::Deserialize)]
+    struct SeedFile { markers: Vec<markers::Marker> }
+    let mut settings = gen::job::Settings::load();
+    let stamp = markers::now_stamp();
+    let mut changed = false;
+    for (name, body) in seed::SEED_MARKERS {
+        let Ok(f) = serde_json::from_str::<SeedFile>(body) else { continue };
+        let mut packs: std::collections::BTreeMap<String, Vec<markers::Marker>> = Default::default();
+        for m in f.markers.into_iter().filter(|m| m.src.ends_with("starter pack")) {
+            packs.entry(m.src.clone()).or_default().push(m);
+        }
+        for (src, items) in packs {
+            if settings.starter_packs.contains(&src) { continue }
+            let path = dir.join("markers").join(name);
+            let mut set = MarkerSet::load(&path);
+            let r = share::merge_from(&mut set.items, &items, &stamp, &src);
+            if r.added > 0 {
+                std::fs::create_dir_all(dir.join("markers")).ok();
+                let _ = set.save();
+            }
+            settings.starter_packs.push(src);
+            changed = true;
+        }
+    }
+    if changed { settings.save() }
+}
+
 /// Write the built-in connections graph and seed markers into `dir` if they are
 /// not already present. Never overwrites: a user's own edits win.
 fn seed_assets(dir: &std::path::Path) {
@@ -3996,6 +4032,8 @@ fn main() -> eframe::Result<()> {
         }
         return Ok(());
     }
+    // Only into a directory we chose, as for seeding.
+    if explicit_base.is_none() { import_starter_packs(&base) }
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 860.0])

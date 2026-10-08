@@ -284,6 +284,12 @@ above the zone's own, and clicking one opens that zone on the marker.
 Every marker remembers where it came from: blank for ones you placed, otherwise
 the pack it arrived in, shown as a dot in the list and on hover.
 
+The app ships a **starter pack** for most zones: crafting stations, banks,
+altars, ore and fishing spots, teleporters and cave entrances. Each is
+imported once, the first time you launch a version that has it, and skips
+anything you have already marked nearby. It is never imported again, so a
+starter marker you delete stays deleted; untick **imported** to hide them all.
+
 ### Sharing markers
 
 Any marker can be copied as a single line to paste into chat:
