@@ -3632,7 +3632,6 @@ fn main() -> eframe::Result<()> {
                 ppu, sea: lz.sea, bbox, ground: Some(&ground),
                 classes: Some((tags.as_slice(), lz.mat_table.as_slice())),
             });
-            gen::tiles::fade_cut(&mut img, &height, &lz.cut, ppu, bbox);
             // MNM_LAMP=1 shows the lamplight version, exposed as a build
             // exposes it: once, from the whole zone at a coarse resolution.
             if std::env::var("MNM_LAMP").is_ok() && !lz.lights.is_empty() {
@@ -3975,7 +3974,7 @@ fn main() -> eframe::Result<()> {
         let res = gen::job::run_zones(todo, lanes, &install, &out, &no_cancel, |env, shared, l| {
             let t1 = std::time::Instant::now();
             let dest = out.join(format!("{}.mbtiles", gen::zones::slug(&l.zone)));
-            let gen::tiles::LoadedZone { tris, sea, props, bbox, cut, .. } =
+            let gen::tiles::LoadedZone { tris, sea, props, bbox, .. } =
                 gen::tiles::load_zone(env, shared, &l.group);
             if tris.is_empty() {
                 println!("  {:<24} skipped (no geometry)", l.zone);
@@ -3983,7 +3982,7 @@ fn main() -> eframe::Result<()> {
             }
             match gen::tiles::build_zone(&dest,
                 &gen::tiles::ZoneInput { name: &l.zone, tris: &tris, sea, props: &props,
-                                         bbox: Some(bbox), tags: None, lights: None, cut: &cut },
+                                         bbox: Some(bbox), tags: None, lights: None },
                 &gen::tiles::Settings {
                     floors: !args.iter().any(|a| a == "--no-floors"),
                     floors_only,

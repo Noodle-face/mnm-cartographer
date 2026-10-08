@@ -131,7 +131,7 @@ impl Job {
                         done: seen, total, name: l.zone.clone(), level: 0, levels: 4,
                     });
                     let out = out_dir.join(format!("{}.mbtiles", zones::slug(&l.zone)));
-                    let tiles::LoadedZone { tris, sea, props, bbox, cut, .. } =
+                    let tiles::LoadedZone { tris, sea, props, bbox, .. } =
                         tiles::load_zone(env, shared, &l.group);
                     if tris.is_empty() {
                         completed.fetch_add(1, Ordering::Relaxed);
@@ -148,7 +148,7 @@ impl Job {
                         &out,
                         &tiles::ZoneInput {
                             name: &name, tris: &tris, sea, props: &props, bbox: Some(bbox), tags: None,
-                            lights: None, cut: &cut,
+                            lights: None,
                         },
                         &tset,
                         |level, levels| {
@@ -531,8 +531,7 @@ impl PaintJob {
                     &tiles::ZoneInput { name: &z, tris: &lz.tris, sea: lz.sea,
                                         props: &lz.all_props, bbox: None,
                                         tags: Some((&lz.mats, &lz.mat_table)),
-                                        lights: Some(&lz.lights),
-                                        cut: if frame.floor.is_some() { &[] } else { &lz.cut } },
+                                        lights: Some(&lz.lights) },
                     ((ax, bx, az, bz), frame.base_ppu), frame.zooms, frame.floor.is_some(), &mut level)
                     .map_err(|e| e.to_string())?;
                 Ok(out)

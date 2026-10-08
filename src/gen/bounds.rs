@@ -106,9 +106,6 @@ pub fn play_region(tris: &[Tri], walls: &[Tri], blocks: &[[f64; 6]], lm: &Landma
         // Some zones carry a stock box far larger than the zone, or one that
         // misses it; use it only when it actually narrows things.
         if c.1 - c.0 > 50.0 && c.3 - c.2 > 50.0 && (c.1 - c.0) * (c.3 - c.2) < 0.97 * (b.1 - b.0) * (b.3 - b.2) {
-            if std::env::var("MNM_BOUNDS_DEBUG").is_ok() {
-                eprintln!("bounds: occlusion areas clip the region from {b:?} to {c:?}");
-            }
             for i in 0..r.inside.len() {
                 let (x, z) = (r.x0 + ((i % r.w) as f64 + 0.5) * r.cell, r.z0 + ((i / r.w) as f64 + 0.5) * r.cell);
                 if x < c.0 || x > c.1 || z < c.2 || z > c.3 { r.inside[i] = false }
