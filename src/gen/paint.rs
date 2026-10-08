@@ -50,8 +50,10 @@ fn class_at(t: MatClass, x: f64, z: f64, slope: f32, fallback: u8) -> u8 {
     let ground: Vec<u8> = layers.iter().copied().filter(|&c| c != mc::ROCK).collect();
     if ground.is_empty() { return mc::ROCK }
     if rocky && slope > 0.75 { return mc::ROCK }
-    if ground.len() > 1 && fbm(x, z, 45.0, 31) > 0.3 { return ground[1] }
-    if ground.len() > 2 && fbm(x, z, 60.0, 37) > 0.45 { return ground[2] }
+    // Secondary layers in patches, kept occasional: at a lower threshold,
+    // sand freckled whole meadows.
+    if ground.len() > 1 && fbm(x, z, 45.0, 31) > 0.38 { return ground[1] }
+    if ground.len() > 2 && fbm(x, z, 60.0, 37) > 0.5 { return ground[2] }
     if rocky && fbm(x, z, 30.0, 39) > 0.62 { return mc::ROCK }
     ground[0]
 }
@@ -236,6 +238,23 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
             }).collect()
         }
     };
+    // Where one natural ground meets another -- grass on dirt, sand on rock
+    // -- the boundary comes from polygons and noise thresholds, and reads as
+    // cut paper. Each natural pixel takes the class a short, noise-driven
+    // step away, which frays every such edge into an organic one; built
+    // surfaces keep their crisp edges.
+    let natural = |c: u8| matches!(c, mc::SAND | mc::GRASS | mc::DIRT | mc::MUD | mc::SNOW);
+    let class: Vec<u8> = (0..n).into_par_iter().map(|i| {
+        if !natural(class[i]) { return class[i] }
+        let (x, z) = world_of(i);
+        let amp = 2.2 * ppu;
+        let dx = (fbm(x, z, 9.0, 91) as f64 * amp).round() as isize;
+        let dz = (fbm(x, z, 9.0, 93) as f64 * amp).round() as isize;
+        let (cx, cy) = ((i % w) as isize + dx, (i / w) as isize + dz);
+        if cx < 0 || cy < 0 || cx as usize >= w || cy as usize >= h { return class[i] }
+        let c = class[cy as usize * w + cx as usize];
+        if natural(c) { c } else { class[i] }
+    }).collect();
     let is = |k: u8| Mask { w, h, v: class.iter().map(|&c| c == k).collect() };
 
     // ---- land and water --------------------------------------------------
@@ -424,11 +443,13 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
     let shade_r = hillshade(&Grid { w, h, v: rock_relief.v.iter().map(|t| t * 0.6).collect() }, ppu, 40.0);
 
     // ---- colour every pixel ----------------------------------------------
-    let (sand_l, sand_d) = (rgb(243, 205, 132), rgb(196, 140, 68));
-    let (rock_l, rock_d) = (rgb(226, 190, 138), rgb(150, 108, 66));
-    let wall_c = rgb(168, 140, 104);
-    let (deep, shallow) = (rgb(12, 118, 160), rgb(58, 196, 205));
-    let (foam_c, foam2_c) = (rgb(235, 245, 240), rgb(215, 238, 236));
+    // A painted atlas, not a screenshot: earth tones a little muted, so the
+    // buildings, water and lettering can carry the eye.
+    let (sand_l, sand_d) = (rgb(238, 214, 166), rgb(200, 162, 108));
+    let (rock_l, rock_d) = (rgb(218, 196, 160), rgb(142, 116, 88));
+    let wall_c = rgb(160, 136, 108);
+    let (deep, shallow) = (rgb(48, 96, 120), rgb(122, 176, 172));
+    let (foam_c, foam2_c) = (rgb(236, 238, 226), rgb(214, 226, 214));
     let mut img: Vec<[f32; 3]> = (0..n).into_par_iter().map(|i| {
         super::throttle::gate();
         let (x, z) = world_of(i);
@@ -447,12 +468,12 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
             mc::GRASS => {
                 let b = fbm(x, z, 18.0, 41) * 0.5 + 0.5;
                 let tuft = if rand01((x * 2.0) as i64, (z * 2.0) as i64, 43) > 0.93 { 0.82 } else { 1.0 };
-                scale(mix(rgb(74, 112, 46), rgb(132, 168, 78), (b + tone * 0.2).clamp(0.0, 1.0)), lit * tuft)
+                scale(mix(rgb(96, 120, 68), rgb(152, 166, 100), (b + tone * 0.2).clamp(0.0, 1.0)), lit * tuft)
             }
             mc::DIRT => {
                 let b = fbm(x, z, 12.0, 47) * 0.5 + 0.5;
                 let pebble = if rand01((x * 3.0) as i64, (z * 3.0) as i64, 49) > 0.95 { 0.8 } else { 1.0 };
-                scale(mix(rgb(122, 92, 62), rgb(176, 142, 102), b), lit * pebble)
+                scale(mix(rgb(138, 112, 84), rgb(184, 158, 122), b), lit * pebble)
             }
             mc::MUD => {
                 let b = fbm(x, z, 10.0, 53) * 0.5 + 0.5;
@@ -470,25 +491,34 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
                 mix(scale(rgb(56, 44, 40), lit), rgb(255, 120, 30), crack)
             }
             mc::WOOD => {
-                // Planks a world unit and a bit wide, running east-west.
-                let row = (z / 1.3).floor() as i64;
-                let seam = (z / 1.3).rem_euclid(1.0) < 0.08;
-                let v = rand01(row, 0, 67) * 0.3;
-                let grain2 = fbm(x * 0.3, z * 4.0, 2.0, 69) * 0.08;
+                // Planks a unit and a half wide, running east-west, each row
+                // butted at its own places as a carpenter staggers them.
+                let row = (z / 1.6).floor() as i64;
+                let off = rand01(row, 1, 65) as f64 * 7.0;
+                let len = 5.0 + rand01(row, 2, 66) as f64 * 3.0;
+                let plank = ((x + off) / len).floor() as i64;
+                let seam = (z / 1.6).rem_euclid(1.0) < 0.06 || ((x + off) / len).rem_euclid(1.0) < 0.025;
+                let v = rand01(row, plank, 67) * 0.16;
+                let grain2 = fbm(x * 0.3, z * 4.0, 2.0, 69) * 0.06;
                 let base = match real {
                     Some(r) => scale(r, 0.82 + v + grain2),
                     None => mix(rgb(108, 76, 46), rgb(158, 116, 72), v + 0.35 + grain2),
                 };
                 let p = scale(base, lit);
-                if seam { scale(p, 0.68) } else { p }
+                if seam { scale(p, 0.84) } else { p }
             }
             mc::STONE => {
                 // Flagstones about two and a half units across, their joints
                 // a shade darker -- a pattern in the paving, not a grid on it.
-                let (gx, gz) = ((x / 2.6).floor() as i64, (z / 2.6).floor() as i64);
-                let (fx, fz) = ((x / 2.6).rem_euclid(1.0), (z / 2.6).rem_euclid(1.0));
-                let mortar = fx < 0.05 || fz < 0.05;
-                let v = rand01(gx, gz, 71) * 0.18;
+                // Courses of flagstones of uneven length, each course set off
+                // from the last: laid by hand, not printed on a grid.
+                let gz = (z / 2.4).floor() as i64;
+                let off = rand01(gz, 3, 75) as f64 * 3.0;
+                let len = 2.2 + rand01(gz, 4, 76) as f64 * 1.6;
+                let gx = ((x + off) / len).floor() as i64;
+                let (fx, fz) = (((x + off) / len).rem_euclid(1.0), (z / 2.4).rem_euclid(1.0));
+                let mortar = fx < 0.035 || fz < 0.04;
+                let v = rand01(gx, gz, 71) * 0.14 + fbm(x, z, 5.0, 77) * 0.04;
                 // Our warm stone, leaning toward the game's own colour for it.
                 let ours = mix(rgb(176, 160, 136), rgb(214, 198, 170), v * 2.0 + 0.2 + tone * 0.1);
                 let base = match real {
@@ -496,10 +526,14 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
                     None => ours,
                 };
                 let p = scale(base, lit);
-                if mortar { scale(p, 0.9) } else { p }
+                if mortar { scale(p, 0.94) } else { p }
             }
-            mc::METAL => scale(real.unwrap_or(rgb(138, 138, 142)), lit * (0.92 + 0.08 * fbm(x * 0.2, z * 3.0, 3.0, 73))),
-            mc::CLOTH => scale(real.unwrap_or(rgb(142, 62, 56)), lit),
+            // Metal and cloth take the game's colour, but pulled toward the
+            // map's warm neutrals: steel-blue and dye-red at full strength
+            // shouted over every street they sat in.
+            mc::METAL => scale(mix(real.unwrap_or(rgb(138, 134, 128)), rgb(150, 142, 130), 0.5),
+                               lit * (0.92 + 0.08 * fbm(x * 0.2, z * 3.0, 3.0, 73))),
+            mc::CLOTH => scale(mix(real.unwrap_or(rgb(150, 92, 72)), rgb(196, 170, 136), 0.4), lit),
             _ => {
                 let t = (0.25 + 0.75 * (shade_d.v[i] * 0.7 + shade_t.v[i] * 0.45) - 0.18 + tone * 0.08).clamp(0.0, 1.0);
                 mix(sand_d, sand_l, t)
@@ -521,10 +555,17 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
         c = mix(c, scale(wall_c, 0.85 + 0.3 * shade_t.v[i]), wallsoft.v[i]);
         // roofs, and the shade they throw on the ground around them
         if roof.v[i] {
-            let base = roof_rgb[i].map(|c| sunlit(c, 0.4, 1.2)).unwrap_or(match roof_cls[i].map_or(class[i], |c| c.base) {
-                mc::WOOD => rgb(146, 104, 66),
-                mc::METAL => rgb(128, 136, 146),
-                mc::CLOTH => rgb(168, 72, 60),
+            let warm = rgb(214, 200, 176);
+            let cloth = roof_cls[i].is_some_and(|c| c.base == mc::CLOTH);
+            let base = roof_rgb[i].map(|c| {
+                let lit = sunlit(c, 0.4, if cloth { 0.6 } else { 0.8 });
+                mix(lit, warm, if cloth { 0.25 } else { 0.35 })
+            }).unwrap_or(match roof_cls[i].map_or(class[i], |c| c.base) {
+                mc::WOOD => rgb(146, 108, 74),
+                mc::METAL => rgb(136, 130, 124),
+                // Awnings and banners the game gives no colour: canvas,
+                // which a market of them should read as, not a rash of red.
+                mc::CLOTH => rgb(204, 184, 150),
                 // Stone and the unidentified: lime-washed plaster.
                 _ => rgb(222, 210, 186),
             });
@@ -539,7 +580,7 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
             }
             // Eaves and ridges: the roof's edge, and steps within it.
             if roof_in.v[i] <= p.mul_add(0.16, 0.0).max(1.0) || rstep.v[i] > 1.4 {
-                r = scale(r, if roof_broad.v[i] > p { 0.52 } else { 0.78 });
+                r = scale(r, if roof_broad.v[i] > p { 0.6 } else { 0.9 });
             }
             c = r;
         } else {
@@ -554,21 +595,27 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
             let mut wc = scale(mix(shallow, deep, depth), 1.0 + 0.06 * fbm(x, z, 18.0, 10));
             let cw = fbm(x, z, 50.0, 12) as f64 * 40.0;
             let caus = ((x * 0.7 + z * 0.3 + cw) / 7.0).sin().abs() as f32;
-            let add = (1.0 - caus).powi(6) * 14.0 * (1.0 - depth);
+            let add = (1.0 - caus).powi(6) * 7.0 * (1.0 - depth);
             wc = [wc[0] + add, wc[1] + add, wc[2] + add];
             c = mix(c, wc, wsoft.v[i]);
             let dw = dist_w.v[i] / p;
-            if water.v[i] && dw < 2.2 { c = mix(c, foam_c, 0.65) }
+            // Foam fading out from the shore, and one faint line of swell
+            // offshore, as an engraver would draw it.
+            if water.v[i] { c = mix(c, foam_c, 0.5 * (1.0 - dw / 2.6).clamp(0.0, 1.0)) }
             let ring = 5.0 + 2.5 * fbm(x, z, 30.0, 13);
-            if water.v[i] && (dw - ring).abs() < 0.9 { c = mix(c, foam2_c, 0.3) }
+            if water.v[i] { c = mix(c, foam2_c, 0.22 * (1.0 - (dw - ring).abs() / 0.9).clamp(0.0, 1.0)) }
         }
-        // Off the map: a plain, darkened parchment.
+        // Off the map: the parchment the map is painted on.
         if beyond.v[i] > 0.0 {
-            let g = 1.0 + 0.05 * fbm(x, z, 40.0, 14);
-            c = mix(c, scale(rgb(122, 104, 80), g), beyond.v[i]);
+            let g = 1.0 + 0.04 * fbm(x, z, 40.0, 14);
+            c = mix(c, scale(rgb(226, 212, 182), g), beyond.v[i]);
         }
         [c[0] / 255.0, c[1] / 255.0, c[2] / 255.0]
     }).collect();
+
+    let hard = Mask { w, h, v: (0..n).map(|i| !natural(class[i]) || roof.v[i] || walls.v[i]).collect() };
+    let hard = grow(&hard, 1.5);
+    finish(&mut img, &hf, &land, &void, &hard, ppu, &world_of);
 
     // ---- north-up ---------------------------------------------------------
     let mut out = vec![[0.0f32; 3]; n];
@@ -578,7 +625,64 @@ pub fn render(height: &Grid, props: &BTreeMap<String, Vec<(f64, f64)>>, o: &Pain
     img = out;
     let mut rgbimg = Rgb { w, h, v: img };
     draw_props(&mut rgbimg, props, &land, o);
+    grade(&mut rgbimg);
     rgbimg
+}
+
+/// What makes the render look painted rather than computed: shade pooling
+/// in low ground, a fine ink line where the ground steps, and the grain of
+/// pigment on paper. Works in raster space, before north-up.
+fn finish(img: &mut [[f32; 3]], hf: &Grid, land: &Mask, void: &Mask, hard: &Mask, ppu: f64,
+          world_of: &(impl Fn(usize) -> (f64, f64) + Sync)) {
+    let _t = super::Timer::start("paint finish");
+    let p = ppu as f32;
+    let (w, h) = (hf.w, hf.h);
+    // Ambient occlusion: ground lower than its surroundings -- a street
+    // between buildings, the foot of a wall, a courtyard -- gathers shade.
+    let around = blur(hf, (4.0 * p).max(1.0));
+    // Ink: a sharp rise over a pixel or two, beyond what the broad slope
+    // explains -- a building's edge, a wall, a terrace -- gets a sepia line.
+    let (mx, mn) = (max_filter(hf, 3), min_filter(hf, 3));
+    let (gy, gx) = gradient(&blur(hf, (5.0 * p).max(1.0)));
+    let ink = [74.0 / 255.0, 56.0 / 255.0, 40.0 / 255.0];
+    // Where the painted ground meets the bare page, pigment pools as a wash
+    // dries: a darker rim just inside the edge, fading inward.
+    let to_void = edt(void).0;
+    img.par_iter_mut().enumerate().for_each(|(i, c)| {
+        super::throttle::gate();
+        if void.v[i] { return }
+        let (x, z) = world_of(i);
+        if land.v[i] {
+            let ao = ((around.v[i] - hf.v[i]) / 2.5).clamp(0.0, 1.0);
+            *c = scale(*c, 1.0 - 0.22 * ao);
+            let expect = gx.v[i].hypot(gy.v[i]) * 3.0;
+            let rise = mx.v[i] - mn.v[i] - expect;
+            // Natural ground stepping over natural ground (a tree's roots, a
+            // mound) stays soft; built edges and cliffs are inked.
+            let a = ((rise - 1.2) / 1.5).clamp(0.0, 1.0) * if hard.v[i] { 0.55 } else { 0.0 };
+            *c = mix(*c, ink, a);
+            let rim = (1.0 - to_void.v[i] / (2.5 * p).max(1.5)).clamp(0.0, 1.0);
+            *c = scale(*c, 1.0 - 0.28 * rim * rim);
+        }
+        // Pigment: broad mottling, as a wash dries unevenly, and a fine
+        // paper tooth. Both keyed to the world, so zoom levels agree.
+        let mottle = fbm(x, z, 38.0, 101) * 0.045;
+        let tooth = vnoise(x, z, (1.6 / ppu).max(0.4), 103) * 0.025;
+        *c = scale(*c, 1.0 + mottle + tooth);
+    });
+    let _ = (w, h);
+}
+
+/// The final colour grade, over everything including props: a little less
+/// saturation, warmer light, and shadows lifted off black, so the whole
+/// picture shares one light.
+fn grade(img: &mut Rgb) {
+    img.v.par_iter_mut().for_each(|c| {
+        let l = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+        let mut o = [0, 1, 2].map(|k| l + (c[k] - l) * 0.86);
+        o = [o[0] * 1.015, o[1] * 1.0, o[2] * 0.965];
+        *c = o.map(|v| (0.045 + 0.94 * v).clamp(0.0, 1.0));
+    });
 }
 
 // ------------------------------------------------------------------ props
@@ -632,24 +736,41 @@ fn draw_props(img: &mut Rgb, props: &BTreeMap<String, Vec<(f64, f64)>>, land: &M
         let r01 = rand01((wx * 10.0) as i64, (wz * 10.0) as i64, 21);
         match kind {
             "tree" => {
+                // A palm from above: a dozen arching fronds, each a tapered
+                // leaf bent a little sideways, dark beneath and lit along one
+                // half, round a small crown.
                 let r = (9.0 + r01 * 4.0) * ppu;
-                if r < 2.5 { blend(img, x as i64, y as i64, rgb(40, 120, 45), 1.0); continue }
+                if r < 2.5 { blend(img, x as i64, y as i64, rgb(78, 108, 60), 1.0); continue }
                 // Shadow down and to the right on screen; turned, its
                 // ellipse swaps axes.
-                let (sx, sy) = up(x, y, r * 0.7, r * 0.8);
-                fill_ellipse(img, sx, sy, r * 0.35, r * 0.6, rgb(60, 40, 15), 0.27);
+                let (sx, sy) = up(x, y, r * 0.6, r * 0.7);
+                fill_ellipse(img, sx, sy, r * 0.55, r * 0.65, rgb(70, 52, 30), 0.22);
                 let a0 = r01 * std::f32::consts::TAU;
-                for j in 0..7 {
-                    let a = a0 + j as f32 * std::f32::consts::TAU / 7.0;
-                    let tip = (x + r * a.cos(), y + r * a.sin());
-                    let s1 = (x + r * 0.45 * (a + 0.5).cos(), y + r * 0.45 * (a + 0.5).sin());
-                    let s2 = (x + r * 0.45 * (a - 0.5).cos(), y + r * 0.45 * (a - 0.5).sin());
-                    let g = 110.0 + rand01(j, (wx * 10.0) as i64, 22) * 40.0;
-                    let leaf = [40.0, g, 45.0];
-                    fill_tri(img, (x, y), s1, tip, leaf, 1.0);
-                    fill_tri(img, (x, y), tip, s2, scale(leaf, 0.8), 1.0);
+                let fronds = 11;
+                for j in 0..fronds {
+                    let jr = rand01(j, (wx * 10.0) as i64, 22);
+                    let a = a0 + j as f32 * std::f32::consts::TAU / fronds as f32 + (jr - 0.5) * 0.3;
+                    let len = r * (0.8 + 0.25 * jr);
+                    let bend = 0.28 * if j % 2 == 0 { 1.0 } else { -1.0 };
+                    let at = |t: f32, side: f32| {
+                        // Along the frond, curving as it goes; `side` is the
+                        // offset across it, widest a third of the way out.
+                        let ang = a + bend * t * t;
+                        let width = len * 0.13 * (t * (1.0 - t) * 3.2).min(1.0) * side;
+                        (x + len * t * ang.cos() - width * ang.sin(), y + len * t * ang.sin() + width * ang.cos())
+                    };
+                    let leaf = mix(rgb(64, 92, 52), rgb(112, 140, 76), jr);
+                    let steps = 5;
+                    for k in 0..steps {
+                        let (t0, t1) = (k as f32 / steps as f32, (k + 1) as f32 / steps as f32);
+                        let (m0, m1) = (at(t0, 0.0), at(t1, 0.0));
+                        fill_tri(img, m0, at(t0, 1.0), at(t1, 1.0), scale(leaf, 0.72), 0.95);
+                        fill_tri(img, m0, at(t1, 1.0), m1, scale(leaf, 0.72), 0.95);
+                        fill_tri(img, m0, at(t0, -1.0), at(t1, -1.0), leaf, 0.95);
+                        fill_tri(img, m0, at(t1, -1.0), m1, leaf, 0.95);
+                    }
                 }
-                fill_ellipse(img, x, y, 1.2 * ppu, 1.2 * ppu, rgb(110, 80, 40), 1.0);
+                fill_ellipse(img, x, y, 1.1 * ppu, 1.1 * ppu, rgb(104, 82, 50), 1.0);
             }
             "conifer" | "broadleaf" => {
                 // A crown seen from above: a ring of lobes round a darker
@@ -662,9 +783,9 @@ fn draw_props(img: &mut Rgb, props: &BTreeMap<String, Vec<(f64, f64)>>, land: &M
                 let (sx, sy) = up(x, y, r * 0.55, r * 0.6);
                 fill_ellipse(img, sx, sy, r * 0.95, r * 0.95, rgb(40, 34, 20), 0.28);
                 let (dark, mid, light) = if conifer {
-                    (rgb(26, 64, 42), rgb(40, 96, 60), rgb(76, 136, 84))
+                    (rgb(40, 64, 48), rgb(62, 92, 66), rgb(108, 134, 94))
                 } else {
-                    (rgb(52, 92, 38), rgb(80, 132, 54), rgb(128, 170, 82))
+                    (rgb(64, 88, 50), rgb(96, 124, 66), rgb(150, 166, 100))
                 };
                 let lobes = if conifer { 9 } else { 6 };
                 let a0 = r01 * std::f32::consts::TAU;
@@ -672,7 +793,15 @@ fn draw_props(img: &mut Rgb, props: &BTreeMap<String, Vec<(f64, f64)>>, land: &M
                     let a = a0 + j as f32 * std::f32::consts::TAU / lobes as f32;
                     let (lx, ly) = (x + r * 0.55 * a.cos(), y + r * 0.55 * a.sin());
                     let lr = r * if conifer { 0.42 } else { 0.55 };
-                    fill_ellipse(img, lx, ly, lr, lr, mid, 1.0);
+                    // An outline first, as an illustrator inks a crown.
+                    fill_ellipse(img, lx, ly, lr + 0.6, lr + 0.6, scale(dark, 0.7), 0.6);
+                }
+                for j in 0..lobes {
+                    let a = a0 + j as f32 * std::f32::consts::TAU / lobes as f32;
+                    let (lx, ly) = (x + r * 0.55 * a.cos(), y + r * 0.55 * a.sin());
+                    let lr = r * if conifer { 0.42 } else { 0.55 };
+                    let t = rand01(j as i64, (wx * 10.0) as i64, 24);
+                    fill_ellipse(img, lx, ly, lr, lr, mix(mid, light, t * 0.35), 1.0);
                 }
                 fill_ellipse(img, x, y, r * 0.55, r * 0.55, dark, 0.4);
                 // The lit side: north-west on screen.

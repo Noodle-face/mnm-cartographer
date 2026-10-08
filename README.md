@@ -428,6 +428,7 @@ Only useful if you are working on the renderer:
 | `--dump-paper` | write the procedural parchment texture to `paper.png` |
 | `--extract <bundle> <scene>` | report the geometry a scene yields |
 | `--render <bundle> <scene> <ppu> <out.png>` | render one zone at one resolution |
+| `--paint-preview <Zone> <prefix> <ppu>[:x0:x1:z0:z1] ...` | paint windows of a zone to `<prefix>0.png`, `<prefix>1.png`... north up, without building a map; the zone loads once, then each window takes about a second. `MNM_LAMP=1` shows the lamplight version |
 
 A debug build (`cargo run`) also takes `MNM_SHOT=out.png`: it opens, sets up the
 states listed in `MNM_SHOT_STATE` (comma-separated: `help`, `ring`, `overlay`,

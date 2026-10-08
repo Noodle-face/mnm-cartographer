@@ -3505,6 +3505,61 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
 
+    // Paint windows of one zone straight to PNGs, north up as the viewer
+    // shows them, for working on the painted style without building a whole
+    // pyramid: the zone loads once, then each window renders in seconds.
+    //   --paint-preview <Zone> <out-prefix> <ppu>:<x0>:<x1>:<z0>:<z1> ...
+    // A window of just <ppu> paints the whole play area.
+    if let Some(i) = args.iter().position(|a| a == "--paint-preview") {
+        let zone = args.get(i + 1).expect("--paint-preview <Zone> <out-prefix> <ppu>[:x0:x1:z0:z1]...");
+        let prefix = args.get(i + 2).expect("--paint-preview <Zone> <out-prefix> ...");
+        let wins: Vec<Vec<f64>> = args[i + 3..].iter().take_while(|a| !a.starts_with("--"))
+            .map(|a| a.split(':').map(|v| v.parse().expect("number")).collect()).collect();
+        let install = gen::job::Settings::load().resolve().expect("game install not found");
+        let t0 = std::time::Instant::now();
+        let l = gen::zones::survey_cached(&install, |_, _, _| {}).into_iter()
+            .find(|l| l.zone.eq_ignore_ascii_case(zone)).expect("no such zone");
+        let env = gen::bundle::Env::open(&l.bundle).unwrap();
+        let shared = gen::bundle::Shared::open(&install);
+        let lz = gen::tiles::load_zone_with(&env, &shared, &l.group, true);
+        println!("loaded {} in {:.1}s", l.zone, t0.elapsed().as_secs_f32());
+        for (k, w) in wins.iter().enumerate() {
+            let t1 = std::time::Instant::now();
+            let ppu = w[0];
+            let bbox = if w.len() == 5 { (w[1], w[2], w[3], w[4]) } else { lz.bbox };
+            let height = gen::raster::rasterize(&lz.tris, ppu, bbox);
+            let tags = gen::raster::rasterize_tagged(&lz.tris, &lz.mats, ppu, bbox).1;
+            let ground = gen::raster::rasterize_low(&lz.tris, ppu, bbox);
+            let mut img = gen::paint::render(&height, &lz.all_props, &gen::paint::PaintOptions {
+                ppu, sea: lz.sea, bbox, ground: Some(&ground),
+                classes: Some((tags.as_slice(), lz.mat_table.as_slice())),
+            });
+            // MNM_LAMP=1 shows the lamplight version, exposed as a build
+            // exposes it: once, from the whole zone at a coarse resolution.
+            if std::env::var("MNM_LAMP").is_ok() && !lz.lights.is_empty() {
+                let h0 = gen::raster::rasterize(&lz.tris, 0.25, lz.bbox);
+                if let Some(e) = gen::light::exposure(&gen::light::light_map(&lz.lights, &h0, 0.25, lz.bbox), &h0) {
+                    gen::light::apply(&mut img, &gen::light::light_map(&lz.lights, &height, ppu, bbox),
+                                      &gen::light::coverage(&height, ppu), e);
+                }
+            }
+            // The render's rows run from high world Z down, its columns along
+            // world X; the viewer puts north (+X) up and east (-Z) right.
+            let (w_, h_) = (img.h as u32, img.w as u32);
+            let mut buf = image::RgbImage::new(w_, h_);
+            for row in 0..h_ {
+                for col in 0..w_ {
+                    let p = img.v[col as usize * img.w + (img.w - 1 - row as usize)];
+                    buf.put_pixel(col, row, image::Rgb(p.map(|c| (c.clamp(0.0, 1.0) * 255.0) as u8)));
+                }
+            }
+            let out = format!("{prefix}{k}.png");
+            buf.save(&out).unwrap();
+            println!("wrote {out} {}x{} in {:.1}s", w_, h_, t1.elapsed().as_secs_f32());
+        }
+        return Ok(());
+    }
+
     // Compare the hand-written primitives against the scipy originals.
     // Render one zone to a PNG at a given resolution, for eyeball comparison
     // against the maps the Python generator produced.

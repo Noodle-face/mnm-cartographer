@@ -134,11 +134,18 @@ pub fn exposure(map: &[[f32; 3]], height: &Grid) -> Option<Exposure> {
     (p90 > 1e-6).then_some(Exposure { base, k: 1.0 / p90 })
 }
 
-/// How bright unlit ground stays, and the faint cool cast it takes.
-const FLOOR: f32 = 0.5;
-const AMBIENT: [f32; 3] = [0.88, 0.92, 1.0];
+/// How bright unlit ground stays.
+const FLOOR: f32 = 0.55;
+/// Unlit ground is moonlit: drawn this far toward its own brightness in a
+/// cool blue, so a desert at night reads as night rather than as mud.
+const MOONLIGHT: f32 = 0.6;
+const MOON: [f32; 3] = [0.66, 0.76, 1.0];
 /// How much light can add on top: enough to colour, short of glare.
 const GAIN: f32 = 0.8;
+/// How much of a light's own hue survives: lights tint, they do not paint.
+/// At full strength a cyan crystal or a violet rune turned whole squares
+/// neon.
+const CHROMA: f32 = 0.6;
 
 /// Colour a painted image by its light map. `img` is north-up (row 0 the
 /// highest Z); `map` and `coverage` are laid out as the height raster (row 0
@@ -152,10 +159,16 @@ pub fn apply(img: &mut Rgb, map: &[[f32; 3]], coverage: &[f32], e: Exposure) {
             let l = map[src + x];
             let a = coverage[src + x].clamp(0.0, 1.0);
             let p = &mut img.v[y * w + x];
+            let mut glow = [0, 1, 2].map(|c| 1.0 - (-(l[c] - e.base[c]).max(0.0) * e.k * 1.4).exp());
+            let gm = (glow[0] + glow[1] + glow[2]) / 3.0;
+            glow = glow.map(|g| gm + (g - gm) * CHROMA);
+            let lum = 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2];
+            let before = *p;
             for c in 0..3 {
-                let glow = 1.0 - (-(l[c] - e.base[c]).max(0.0) * e.k * 1.4).exp();
-                let f = FLOOR * AMBIENT[c] + GAIN * glow;
-                p[c] = (p[c] * (1.0 + (f - 1.0) * a)).clamp(0.0, 1.0);
+                let night = FLOOR * (before[c] + (lum * MOON[c] - before[c]) * MOONLIGHT);
+                // Light shows the surface's own colour, tinted by its own.
+                let lit = night + before[c] * GAIN * glow[c];
+                p[c] = (before[c] + (lit - before[c]) * a).clamp(0.0, 1.0);
             }
         }
     }
@@ -182,13 +195,16 @@ mod tests {
         apply(&mut img, &map, &[1.0, 1.0], e);
         let unlit = img.v[0];
         let lit = img.v[1];
-        // Unlit keeps about half its brightness, never less than 40%.
-        assert!(unlit[0] >= 0.8 * 0.4 && unlit[2] >= 0.4 * 0.4, "{unlit:?}");
+        // Unlit keeps about half its brightness, never less than 40% --
+        // brightness, not each channel: moonlight cools the hue.
+        let lum = |c: [f32; 3]| 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+        assert!(lum(unlit) >= 0.4 * lum([0.8, 0.6, 0.4]), "{unlit:?}");
+        assert!(unlit[2] / unlit[0] > 0.4 / 0.8, "moonlight should cool unlit ground: {unlit:?}");
         // Off the map, nothing changes.
         let mut off = Rgb { w: 1, h: 1, v: vec![[0.5, 0.5, 0.5]] };
         apply(&mut off, &[[0.0; 3]], &[0.0], e);
         assert_eq!(off.v[0], [0.5, 0.5, 0.5]);
-        // Lit by blue is bluer than unlit.
-        assert!(lit[2] > unlit[2] && (lit[0] - unlit[0]).abs() < 1e-6, "{lit:?} vs {unlit:?}");
+        // Lit by blue gains more blue than anything else.
+        assert!(lit[2] - unlit[2] > lit[0] - unlit[0] && lit[2] > unlit[2], "{lit:?} vs {unlit:?}");
     }
 }
