@@ -68,9 +68,15 @@ impl Default for Settings {
 /// coarsest and finest -- enough that a marker placed at one zoom lands
 /// visibly off at another. Markers live in world space, so levels must agree
 /// on world space exactly.
+///
+/// The resolution comes from the geometry, not the frame: the margin around
+/// it is paper, and counting it against the budget halved Underdocks' finest
+/// level when its margin was added.
 pub fn plan(tris: &[Tri], frame: Option<raster::Bbox>, s: &Settings) -> (raster::Bbox, f64) {
     let bbox = frame.unwrap_or_else(|| raster::auto_bbox(tris));
-    let area = ((bbox.1 - bbox.0) * (bbox.3 - bbox.2)).max(1.0);
+    let g = raster::extent(tris);
+    let (x0, x1, z0, z1) = (g.0.max(bbox.0), g.1.min(bbox.1), g.2.max(bbox.2), g.3.min(bbox.3));
+    let area = ((x1 - x0).max(0.0) * (z1 - z0).max(0.0)).max(1.0);
     let top = (s.budget_mp * 1e6 / area).sqrt();
     let top = s.max_ppu.min(2f64.powf(top.max(1e-6).log2().round()));
     (bbox, top / 2f64.powi(s.zooms as i32 - 1))
@@ -494,17 +500,24 @@ pub fn load_zone_with(env: &super::bundle::Env, shared: &super::bundle::Shared,
     keep(&mut tris, &mut mats, k);
     let k = { let _t = super::Timer::start("  sky"); super::bounds::sky_keep(&tris, raster::auto_bbox(&tris)) };
     keep(&mut tris, &mut mats, k);
-    let full = raster::auto_bbox(&tris);
+    // The whole of what is left, not a percentile box: strays are gone, and
+    // trimming the last 0.05% each side cut real geometry off along a ruler
+    // -- Underdocks lost its west, east and south edges.
+    let full = raster::extent(&tris);
+    // Room for the edge's hatching, which a frame at the geometry stopped dead.
+    let m = super::bounds::margin((full.1 - full.0).max(full.3 - full.2));
+    let framed = (full.0 - m, full.1 + m, full.2 - m, full.3 + m);
     let region = { let _t = super::Timer::start("  play region"); super::bounds::play_region(&tris, &floors.walls, &floors.blocks, &lm, sea, full) };
     let (bbox, bounds) = match region {
         Some(r) => {
             let b = r.bbox();
             let k = super::bounds::region_keep(&tris, &r);
             keep(&mut tris, &mut mats, k);
-            // The frame is the region, but never wider than the geometry.
-            ((b.0.max(full.0), b.1.min(full.1), b.2.max(full.2), b.3.min(full.3)), r.method)
+            // The frame is the region and its margin, but never much wider
+            // than the geometry.
+            ((b.0.max(framed.0), b.1.min(framed.1), b.2.max(framed.2), b.3.min(framed.3)), r.method)
         }
-        None => (full, "all"),
+        None => (framed, "all"),
     };
     let lights = if tagged { let _t = super::Timer::start("  lights"); super::light::scene_lights(env, &files) } else { Vec::new() };
     LoadedZone { tris, sea, props, bbox, bounds, all_props, prop_points, mats, mat_table: floors.mat_table,

@@ -10,6 +10,15 @@ use super::grid::{quantile, sorted_copy, Grid};
 /// (min_x, max_x, min_z, max_z) in world units.
 pub type Bbox = (f64, f64, f64, f64);
 
+/// Every vertex's bounds, to the last one. For a zone whose strays are
+/// already gone (see [`super::bounds::strays_keep`]): what is left is the
+/// zone, and its outermost geometry is as real as the rest.
+pub fn extent(tris: &[Tri]) -> Bbox {
+    tris.iter().flatten().fold(
+        (f64::MAX, f64::MIN, f64::MAX, f64::MIN),
+        |b, v| (b.0.min(v[0] as f64), b.1.max(v[0] as f64), b.2.min(v[2] as f64), b.3.max(v[2] as f64)))
+}
+
 /// Bounds that ignore the long tail of stray geometry, as the Python used
 /// percentiles rather than the raw extremes.
 pub fn auto_bbox(tris: &[Tri]) -> Bbox {

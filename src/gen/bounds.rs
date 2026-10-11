@@ -40,6 +40,9 @@ const MIN_SHARE: f64 = 0.05;
 /// stays about 98% the zone.
 const MARGIN: f64 = 0.02;
 
+/// The margin kept around an area whose longer side is `span`.
+pub fn margin(span: f64) -> f64 { MARGIN * span }
+
 /// The play area of a zone, as cells of a grid over the world.
 pub struct Region {
     x0: f64,
@@ -114,7 +117,7 @@ pub fn play_region(tris: &[Tri], walls: &[Tri], blocks: &[[f64; 6]], lm: &Landma
     }
     r.core = r.inside.clone();
     let b = r.bbox();
-    let grow = (MARGIN * (b.1 - b.0).max(b.3 - b.2) / r.cell).ceil() as usize + 1;
+    let grow = (margin((b.1 - b.0).max(b.3 - b.2)) / r.cell).ceil() as usize + 1;
     r.dilate(grow);
     Some(r)
 }
@@ -279,6 +282,11 @@ fn walkable(tris: &[Tri], walls: &[Tri], blocks: &[[f64; 6]], lm: &Landmarks,
     let span = (full.1 - full.0).max(full.3 - full.2);
     let cell = (span / 400.0).max(4.0);
     let ppu = 1.0 / cell;
+    // Room past the geometry for the margin to grow into. A grid ending at
+    // the geometry's edge stopped the margin there, and the map with it: a
+    // ruled line wherever the zone reached the edge of its box.
+    let pad = margin(span) + 2.0 * cell;
+    let full = (full.0 - pad, full.1 + pad, full.2 - pad, full.3 + pad);
     let (w, h) = raster::raster_size(ppu, full);
     let n = w * h;
     let (lo, hi) = ground(tris, ppu, full);
