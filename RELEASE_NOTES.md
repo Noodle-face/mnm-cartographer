@@ -1,16 +1,13 @@
 ## What's new
 
-- **A proper map legend** -- the key in the corner is now set like a printed
-  map's: each kind of marker on screen, its badge beside its name in its own
-  colour, under a ruled title. No more counts.
-- **Fixed: parts of some maps were faded away.** 0.0.9 faded maps out toward
-  their trimmed edges, and where trimmed scenery lay close to the real zone
-  it washed out real ground with it -- Underdocks lost its docks and the
-  water channels beside them. The fade is gone; every map shows everything it
-  did before 0.0.9, and a little more at the edges.
+- **Fixed: maps cut off along straight lines at their edges.** A zone whose
+  ground reached the edge of its map lost its last stretch along a ruled line,
+  and the shading round its outline stopped dead there -- Underdocks' docks,
+  its eastern shore and its southern tip, for one. Every map now shows the
+  whole zone with a margin all round, at the same detail as before.
 
-If you rebuilt maps with 0.0.9, open **Maps...** and press **Rebuild maps**,
-and **Repaint this map** for painted ones, to get the missing parts back.
+Open **Maps...** and press **Rebuild maps**, and **Repaint this map** for
+painted ones, to get the missing edges back.
 
 ## Install
 
